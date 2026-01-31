@@ -1,0 +1,101 @@
+# Orchestrator Module
+
+## Purpose
+Central coordinator that receives investigation requests, manages identity confirmation, and orchestrates the full OSINT data gathering pipeline.
+
+## Module Type
+Backend Service (TypeScript/Node.js)
+
+## Dependencies
+- @anthropic-ai/sdk - Claude API for orchestration logic
+- @/shared/config - Environment variable management
+- @/modules/scraper-swarm - Web scraping
+- @/modules/persona-engine - Persona building
+
+## Interfaces
+
+```typescript
+interface InvestigationRequest {
+  targetName: string;
+  targetContext?: string;
+  depth: 'quick' | 'standard' | 'deep';
+}
+
+interface InvestigationResult {
+  targetId: string;
+  targetName: string;
+  status: 'pending' | 'confirming_identity' | 'scraping' | 'building_persona' | 'ready' | 'error';
+  identityCandidates?: IdentityCandidate[];
+  confirmedIdentity?: IdentityCandidate;
+  sourcesScraped: number;
+  dataPoints: number;
+  scrapedData: ScrapedData[];
+  persona?: PersonaModel;
+  error?: string;
+}
+
+interface IdentityCandidate {
+  id: string;
+  name: string;
+  description: string;
+  confidence: number;
+  sources: string[];
+}
+
+interface IdentityConfirmation {
+  confirmed: boolean;
+  selectedCandidateId?: string;
+  additionalContext?: string;
+}
+```
+
+## Core Functions
+
+### startInvestigation(request: InvestigationRequest): Promise<InvestigationResult>
+1. Generate unique targetId using uuid
+2. Create initial investigation record with status 'confirming_identity'
+3. Call findIdentityCandidates() from scraper-swarm to find potential matches
+4. Store candidates in investigation record
+5. Return investigation with candidates for user confirmation
+
+### confirmIdentity(targetId: string, confirmation: IdentityConfirmation): Promise<InvestigationResult>
+1. Retrieve investigation by targetId
+2. If not confirmed, set status to 'error'
+3. Set confirmedIdentity from selected candidate
+4. Update status to 'scraping'
+5. Trigger runFullInvestigation() asynchronously
+6. Return updated investigation
+
+### runFullInvestigation(targetId: string): Promise<void>
+1. Get all available sources from scraper-swarm
+2. Call scrapeAll() with confirmed identity context
+3. Update investigation with scraped data and data point count
+4. Set status to 'building_persona'
+5. Call buildPersona() from persona-engine
+6. Set status to 'ready' with completed persona
+
+### getInvestigationStatus(targetId: string): Promise<InvestigationResult | null>
+Return investigation record from in-memory store
+
+### quickInvestigate(request: InvestigationRequest): Promise<InvestigationResult>
+Skip identity confirmation - immediately scrape and build persona for demos
+
+## State Management
+Use in-memory Map<string, InvestigationResult> for investigation storage.
+In production, replace with database.
+
+## Error Handling
+- Wrap all async operations in try-catch
+- Set status to 'error' and populate error field on failure
+- Log errors with context for debugging
+
+## Security
+- All API keys accessed via config.anthropic.apiKey pattern
+- Never log or expose API keys
+- Validate all input parameters
+
+## Exports
+- startInvestigation
+- confirmIdentity
+- getInvestigationStatus
+- quickInvestigate

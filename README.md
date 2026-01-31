@@ -2,6 +2,8 @@
 
 **Talk to Anyone.** Voice-controlled OSINT platform that scrapes public information about a person and creates an AI persona you can have a voice conversation with.
 
+Built with **Prompt-Driven Development (PDD)** - prompts are the source of truth, code is regenerable.
+
 ## What It Does
 
 1. **Enter a name** - "Elon Musk", "Sam Altman", anyone public
@@ -83,6 +85,43 @@ RTRVR_API_KEY=         # Scraping - https://rtrvr.ai
 └─────────────────────────────────────────────────────────────┘
 ```
 
+## Prompt-Driven Development (PDD)
+
+This project follows PDD principles where **prompts are the source of truth** and code is a regenerable artifact.
+
+### Prompt Files (`/prompts`)
+
+| Prompt | Generated Code | Purpose |
+|--------|---------------|---------|
+| `orchestrator.prompt` | `/modules/orchestrator/src/index.ts` | Investigation pipeline |
+| `scraper-swarm.prompt` | `/modules/scraper-swarm/src/index.ts` | Web scraping |
+| `persona-engine.prompt` | `/modules/persona-engine/src/index.ts` | Personality synthesis |
+| `voice-interface.prompt` | `/modules/voice-interface/src/index.ts` | Voice conversation |
+| `ui-dashboard.prompt` | `/app/**/*.tsx` | React UI components |
+| `shared-types.prompt` | `/shared/types/index.ts` | TypeScript interfaces |
+| `shared-config.prompt` | `/shared/config/index.ts` | Configuration |
+
+### Regeneration Workflow
+
+```bash
+# 1. Modify the prompt
+nano prompts/orchestrator.prompt
+
+# 2. Regenerate code from prompt
+# Feed prompt to Claude Code or your AI tool
+
+# 3. Validate
+npm run typecheck
+npm test
+```
+
+### PDD Principles Applied
+
+1. **Prompts as Source of Truth** - All specifications in `/prompts`
+2. **Regenerative Development** - Code fully regenerable from prompts
+3. **Test Accumulation** - Tests validate regenerated code
+4. **Synchronization** - Prompts, code, and tests stay in sync
+
 ## Modules
 
 - **`/modules/orchestrator`** - Central coordinator for investigation pipeline
@@ -109,10 +148,29 @@ RTRVR_API_KEY=         # Scraping - https://rtrvr.ai
 ./scripts/security-check.sh
 ```
 
+## Hackathon Submission
+
+Built for the **Get Funded @Prompt Driven Development Hackathon**.
+
+### Scoring Criteria Met
+
+- **Innovation & Originality (25pts)** - Novel voice + OSINT + persona concept
+- **Technical Implementation (25pts)** - Full PDD methodology with prompts as source of truth
+- **Investment Potential (25pts)** - Clear market for competitive intelligence
+- **Presentation & Demo (15pts)** - Live voice conversation demo
+- **Use of PDD Principles (10pts)** - Prompts, regeneration, test accumulation
+
+### Sponsor Technologies Used
+
+- **rtrvr.ai** - Web scraping infrastructure
+- **Toolhouse.ai** - Agent orchestration
+- **ElevenLabs** - Voice synthesis
+- **Anthropic Claude** - AI orchestration
+
 ## License
 
 MIT
 
 ---
 
-Built for hackathon. Ship fast, ask questions later.
+Built for hackathon. Ship fast, talk to anyone.

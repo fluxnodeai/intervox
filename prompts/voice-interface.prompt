@@ -1,0 +1,147 @@
+# Voice Interface Module
+
+## Purpose
+Handles voice conversations using Grok (xAI) for persona responses and ElevenLabs for text-to-speech synthesis.
+
+## Module Type
+Backend Service (TypeScript/Node.js)
+
+## Dependencies
+- openai - OpenAI-compatible client for Grok API
+- elevenlabs - ElevenLabs SDK for TTS
+- @/shared/config - Environment variable management
+- uuid - Generate unique IDs
+
+## Why Grok for Voice Persona
+Grok has better personality expression than Claude for conversational roleplay. It produces more natural, engaging responses when embodying a persona.
+
+## Interfaces
+
+```typescript
+interface ConversationSession {
+  id: string;
+  personaId: string;
+  personaName: string;
+  startedAt: string;
+  messages: ConversationMessage[];
+  status: 'active' | 'ended';
+}
+
+interface ConversationMessage {
+  id: string;
+  role: 'user' | 'assistant';
+  content: string;
+  timestamp: string;
+  audioUrl?: string;
+}
+
+interface VoiceConfig {
+  voiceId: string;
+  stability: number;
+  similarityBoost: number;
+  style?: number;
+}
+```
+
+## Client Initialization
+
+```typescript
+// Grok uses OpenAI-compatible API
+const grok = new OpenAI({
+  apiKey: config.xai.apiKey,
+  baseURL: 'https://api.x.ai/v1',
+});
+
+// ElevenLabs client
+const elevenlabs = new ElevenLabsClient({
+  apiKey: config.elevenlabs.apiKey,
+});
+```
+
+## Core Functions
+
+### startConversation(persona: PersonaModel, voiceConfig?: Partial<VoiceConfig>): Promise<ConversationSession>
+1. Generate unique session ID
+2. Create ConversationSession object with empty messages
+3. Store persona's systemPrompt for this session
+4. Store session in in-memory Map
+5. Return session
+
+### chat(sessionId: string, userMessage: string): Promise<ConversationMessage>
+1. Retrieve session and systemPrompt
+2. Add user message to session history
+3. Build messages array: [system prompt, ...history]
+4. Call Grok API:
+   - model: 'grok-2-latest'
+   - max_tokens: 300 (concise for voice)
+   - temperature: 0.8 (personality)
+5. Extract response content
+6. Add assistant message to history
+7. Return assistant message
+
+### textToSpeech(text: string, voiceConfig?: Partial<VoiceConfig>): Promise<Buffer>
+1. Merge config with defaults
+2. Call elevenlabs.textToSpeech.convert():
+   - voiceId from config
+   - model_id: 'eleven_turbo_v2_5'
+   - voice_settings: stability, similarity_boost, style
+3. Collect stream chunks into array
+4. Return concatenated Buffer
+
+### chatWithVoice(sessionId: string, userMessage: string, voiceConfig?: Partial<VoiceConfig>): Promise<{message, audio}>
+1. Call chat() to get text response
+2. Call textToSpeech() on response content
+3. Return both message and audio buffer
+
+### streamChat(sessionId: string, userMessage: string): AsyncGenerator<string>
+1. Retrieve session and systemPrompt
+2. Add user message to history
+3. Call Grok with stream: true
+4. Yield content chunks as they arrive
+5. After stream ends, add complete message to history
+
+### getConversation(sessionId: string): ConversationSession | null
+Return session from in-memory store
+
+### endConversation(sessionId: string): void
+Set session status to 'ended'
+
+## Voice Configuration
+
+### Default Config
+```typescript
+{
+  voiceId: '21m00Tcm4TlvDq8ikWAM', // Rachel
+  stability: 0.5,
+  similarityBoost: 0.75,
+  style: 0.5
+}
+```
+
+### Voice Options
+- male_professional: 'ErXwobaYiN019PkySvjV' (Antoni)
+- male_casual: 'VR6AewLTigWG4xSOukaG' (Arnold)
+- female_professional: '21m00Tcm4TlvDq8ikWAM' (Rachel)
+- female_casual: 'EXAVITQu4vr4xnSDxMaL' (Bella)
+
+## State Management
+- conversations: Map<string, ConversationSession>
+- personaPrompts: Map<string, string>
+
+## Error Handling
+- Throw on missing session
+- Catch API errors and return graceful fallback responses
+
+## Security
+- Use config.xai.apiKey and config.elevenlabs.apiKey
+- Never expose keys
+
+## Exports
+- startConversation
+- chat
+- textToSpeech
+- chatWithVoice
+- streamChat
+- getConversation
+- endConversation
+- VOICE_OPTIONS

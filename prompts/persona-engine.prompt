@@ -1,0 +1,161 @@
+# Persona Engine Module
+
+## Purpose
+Builds personality and knowledge models from scraped data, then generates system prompts for voice conversation with Grok.
+
+## Module Type
+Backend Service (TypeScript/Node.js)
+
+## Dependencies
+- @anthropic-ai/sdk - Claude API for personality analysis
+- @/shared/config - Environment variable management
+
+## Interfaces
+
+```typescript
+interface PersonaModel {
+  targetId: string;
+  targetName: string;
+  identity: {
+    fullName: string;
+    currentRole: string;
+    company?: string;
+    location?: string;
+    bio: string;
+    profileImageUrl?: string;
+  };
+  personality: {
+    traits: string[];
+    communicationStyle: string;
+    values: string[];
+    quirks?: string[];
+  };
+  knowledge: {
+    expertise: string[];
+    opinions: Opinion[];
+    experiences: string[];
+    education: Education[];
+    workHistory: WorkExperience[];
+  };
+  speech: {
+    tone: string;
+    vocabulary: string[];
+    phrases: string[];
+    exampleQuotes: Quote[];
+  };
+  systemPrompt: string;
+  createdAt: string;
+  dataPointsUsed: number;
+}
+
+interface PersonaAnalysis {
+  personality: {
+    traits: string[];
+    communicationStyle: string;
+    values: string[];
+    quirks: string[];
+  };
+  expertise: string[];
+  experiences: string[];
+  tone: string;
+  vocabulary: string[];
+  phrases: string[];
+}
+```
+
+## Core Functions
+
+### buildPersona(targetId: string, targetName: string, scrapedData: ScrapedData[]): Promise<PersonaModel>
+1. Call aggregateScrapedData() to merge all sources
+2. Call analyzePersonality() to extract personality traits via Claude
+3. Build PersonaModel object with all fields populated
+4. Call generateSystemPrompt() to create Grok instruction prompt
+5. Set createdAt timestamp and dataPointsUsed count
+6. Return complete PersonaModel
+
+### aggregateScrapedData(scrapedData: ScrapedData[]): AggregatedData
+1. Sort data by confidence (highest first)
+2. Take first non-empty value for singular fields (fullName, currentRole, etc.)
+3. Concatenate arrays (education, workHistory, quotes, opinions)
+4. Deduplicate skills array
+5. Aggregate rawContent for analysis
+6. Return merged data object
+
+### analyzePersonality(name: string, data: AggregatedData): Promise<PersonaAnalysis>
+1. Construct analysis prompt with:
+   - Person's background info
+   - Sample quotes (up to 20)
+   - Stated opinions (up to 15)
+   - Work history
+   - Raw content excerpts
+2. Call Claude API (claude-sonnet-4-20250514)
+3. Request JSON response with:
+   - personality.traits (5-7 traits)
+   - personality.communicationStyle
+   - personality.values (3-5 values)
+   - personality.quirks
+   - expertise (5-10 topics)
+   - experiences (key life events)
+   - tone description
+   - vocabulary (distinctive words)
+   - phrases (signature expressions)
+4. Parse JSON from response
+5. Return PersonaAnalysis or fallback defaults
+
+### generateSystemPrompt(persona: PersonaModel): string
+Generate comprehensive system prompt that instructs Grok to embody the persona:
+
+```
+You are {fullName}. You must embody this person completely.
+
+## YOUR IDENTITY
+- Name, role, company, location, bio
+
+## YOUR PERSONALITY
+- Core traits, communication style, values, quirks
+
+## YOUR EXPERTISE
+- List of knowledge areas
+
+## YOUR OPINIONS
+- Topic: Position format for each opinion
+
+## YOUR CAREER HISTORY
+- Role at Company (duration)
+
+## YOUR EDUCATION
+- Degree in Field at Institution
+
+## YOUR SPEAKING STYLE
+- Tone, vocabulary, signature phrases
+
+## EXAMPLE QUOTES FROM YOU
+- Direct quotes to emulate
+
+## INSTRUCTIONS
+1. You ARE this person - first person responses
+2. Draw from documented opinions and experiences
+3. Match communication style and tone
+4. Deflect gracefully on unknown topics
+5. Stay consistent with documented views
+6. Be conversational for voice
+7. Keep responses concise
+```
+
+## Utility Functions
+
+### countDataPoints(data: AggregatedData): number
+Sum all populated fields and array lengths
+
+## Error Handling
+- Catch Claude API errors in analyzePersonality
+- Return sensible defaults on failure
+- Log errors for debugging
+
+## Security
+- Use config.anthropic.apiKey from environment
+- Never expose API keys in logs or responses
+
+## Exports
+- buildPersona
+- generateSystemPrompt

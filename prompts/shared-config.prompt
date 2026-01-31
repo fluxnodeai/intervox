@@ -1,0 +1,128 @@
+# Shared Config Module
+
+## Purpose
+Central configuration management. Single source of truth for all API keys and environment variables. Security-critical module.
+
+## Module Type
+Shared Library (TypeScript)
+
+## File Location
+/shared/config/index.ts
+
+## Security Requirements
+
+### ABSOLUTE RULES
+1. ALL secrets loaded from process.env
+2. NEVER hardcode any API key, token, or password
+3. NEVER commit .env files
+4. ALWAYS use config.{service}.apiKey pattern
+5. Validate config at application startup
+
+### Environment Variables Required
+```
+ANTHROPIC_API_KEY     - Claude API (orchestration, persona building)
+XAI_API_KEY           - Grok API (voice persona responses)
+ELEVENLABS_API_KEY    - Text-to-speech
+TOOLHOUSE_API_KEY     - Agent orchestration tools
+RTRVR_API_KEY         - Web scraping
+PORT                  - Server port (optional, default 3000)
+NODE_ENV              - Environment (optional, default development)
+```
+
+## Implementation
+
+```typescript
+import 'dotenv/config';
+
+function getEnvVar(name: string, required: boolean = true): string {
+  const value = process.env[name];
+  if (required && !value) {
+    throw new Error(
+      `Missing required environment variable: ${name}\n` +
+      `Please ensure ${name} is set in your .env file.`
+    );
+  }
+  return value || '';
+}
+
+export const config = {
+  anthropic: {
+    apiKey: getEnvVar('ANTHROPIC_API_KEY'),
+  },
+  xai: {
+    apiKey: getEnvVar('XAI_API_KEY'),
+    baseUrl: 'https://api.x.ai/v1',
+  },
+  elevenlabs: {
+    apiKey: getEnvVar('ELEVENLABS_API_KEY'),
+  },
+  toolhouse: {
+    apiKey: getEnvVar('TOOLHOUSE_API_KEY'),
+  },
+  rtrvr: {
+    apiKey: getEnvVar('RTRVR_API_KEY'),
+    baseUrl: 'https://api.rtrvr.ai',
+  },
+  server: {
+    port: parseInt(getEnvVar('PORT', false) || '3000', 10),
+    nodeEnv: getEnvVar('NODE_ENV', false) || 'development',
+  },
+  isDevelopment: process.env.NODE_ENV !== 'production',
+  isProduction: process.env.NODE_ENV === 'production',
+};
+```
+
+## Validation Function
+
+```typescript
+export function validateConfig(): void {
+  const required = [
+    'ANTHROPIC_API_KEY',
+    'XAI_API_KEY',
+    'ELEVENLABS_API_KEY',
+    'TOOLHOUSE_API_KEY',
+    'RTRVR_API_KEY',
+  ];
+
+  const missing = required.filter(key => !process.env[key]);
+
+  if (missing.length > 0) {
+    console.warn(
+      `Missing environment variables:\n` +
+      missing.map(k => `  - ${k}`).join('\n')
+    );
+  } else {
+    console.log('Configuration validated successfully');
+  }
+}
+```
+
+## Usage Pattern
+
+```typescript
+// In any module
+import { config } from '@/shared/config';
+
+// Anthropic client
+const anthropic = new Anthropic({
+  apiKey: config.anthropic.apiKey,  // ✅ Correct
+});
+
+// NEVER do this
+const anthropic = new Anthropic({
+  apiKey: 'sk-abc123...',  // ❌ NEVER hardcode
+});
+```
+
+## Files Structure
+```
+/shared/config/
+  index.ts          - Config implementation
+/.env.example       - Template (committed)
+/.env               - Actual secrets (NEVER committed)
+/.gitignore         - Must include .env
+```
+
+## Exports
+- config (default and named)
+- validateConfig

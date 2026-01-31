@@ -1,0 +1,129 @@
+# Scraper Swarm Module
+
+## Purpose
+Specialized scrapers that extract structured information about a target person from public sources using rtrvr.ai API.
+
+## Module Type
+Backend Service (TypeScript/Node.js)
+
+## Dependencies
+- @/shared/config - Environment variable management (config.rtrvr.apiKey)
+- uuid - Generate unique IDs for scraped data
+
+## rtrvr.ai API Integration
+
+### Endpoints Used
+- POST /scrape - Raw page content extraction
+- POST /agent - AI-powered data extraction with natural language instructions
+
+### Authentication
+```typescript
+headers: {
+  'Authorization': `Bearer ${config.rtrvr.apiKey}`,
+  'Content-Type': 'application/json'
+}
+```
+
+## Interfaces
+
+```typescript
+type SourceType = 'linkedin' | 'twitter' | 'wikipedia' | 'news' | 'company' | 'podcast' | 'youtube' | 'github' | 'google' | 'other';
+
+interface ScrapeRequest {
+  targetName: string;
+  targetContext?: string;
+  sources: SourceType[];
+  confirmedIdentity?: IdentityCandidate;
+}
+
+interface ScrapedData {
+  id: string;
+  source: SourceType;
+  sourceUrl: string;
+  scrapedAt: string;
+  confidence: number;
+  data: PersonData;
+  rawContent?: string;
+}
+
+interface PersonData {
+  fullName?: string;
+  currentRole?: string;
+  company?: string;
+  location?: string;
+  bio?: string;
+  education?: Education[];
+  workHistory?: WorkExperience[];
+  quotes?: Quote[];
+  opinions?: Opinion[];
+  skills?: string[];
+}
+```
+
+## Core Functions
+
+### findIdentityCandidates(targetName: string, context?: string): Promise<IdentityCandidate[]>
+1. Construct search query from name + context
+2. Call rtrvr.ai /agent endpoint with prompt to find top 3-5 matches
+3. Search Google and LinkedIn for candidates
+4. Extract: name, description, confidence score, source URLs
+5. Parse JSON response into IdentityCandidate array
+6. Return candidates sorted by confidence
+
+### rtrvrAgent(input: string, urls: string[]): Promise<RtrvrAgentResponse>
+1. POST to config.rtrvr.baseUrl + '/agent'
+2. Body: { input, urls, response: { verbosity: 'final' } }
+3. Return { success: boolean, result?: string, error?: string }
+
+### rtrvrScrape(urls: string[]): Promise<RtrvrScrapeResponse>
+1. POST to config.rtrvr.baseUrl + '/scrape'
+2. Body: { urls, response: { verbosity: 'final' } }
+3. Return { success: boolean, content?: string, error?: string }
+
+## Source-Specific Scrapers
+
+Each scraper follows this pattern:
+1. Construct search URL for the source
+2. Create extraction prompt with target name and context
+3. Call rtrvrAgent() with prompt and URL
+4. Parse response into PersonData structure
+5. Return ScrapedData with source metadata
+
+### Scrapers to Implement
+- scrapeLinkedIn - Professional info, work history, education
+- scrapeTwitter - Bio, recent tweets, opinions, communication style
+- scrapeWikipedia - Full biography, achievements, quotes
+- scrapeNews - Recent coverage, quotes, topics
+- scrapeYouTube - Video appearances, interview quotes
+- scrapeGitHub - Technical profile, projects, skills
+- scrapePodcasts - Interview appearances, quotes
+- scrapeCompany - Official bio, press releases
+- scrapeGoogle - Knowledge panel, general info
+
+### scrapeAll(request: ScrapeRequest): Promise<ScrapedData[]>
+1. Map sources to corresponding scraper functions
+2. Run all scrapers in parallel with Promise.all
+3. Filter out null results (failed scrapes)
+4. Return array of successful ScrapedData
+
+### getAvailableSources(): SourceType[]
+Return list of all implemented source types
+
+## Data Parsing
+
+### parsePersonData(rawResult: string): PersonData
+1. Try to parse as JSON
+2. Extract fields: fullName, currentRole, company, bio, etc.
+3. Normalize quotes array (handle string vs object format)
+4. Normalize opinions with confidence scores
+5. Fallback: if not JSON, extract bio from raw text
+
+## Error Handling
+- Wrap each scraper in try-catch
+- Return null on failure (filtered out in scrapeAll)
+- Log errors with source context
+
+## Exports
+- findIdentityCandidates
+- scrapeAll
+- getAvailableSources

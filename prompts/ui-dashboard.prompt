@@ -1,0 +1,164 @@
+# UI Dashboard Module
+
+## Purpose
+Palantir-style dark interface for OSINT investigation and voice conversation with personas.
+
+## Module Type
+Frontend Application (Next.js 15 / React 19 / TypeScript)
+
+## Dependencies
+- next - React framework with App Router
+- react, react-dom - UI library
+- framer-motion - Animations
+- lucide-react - Icons
+- tailwindcss - Styling
+
+## Design System
+
+### Color Palette
+```css
+:root {
+  --bg-primary: #0a0a0f;      /* Main background */
+  --bg-secondary: #12121a;    /* Card backgrounds */
+  --bg-tertiary: #1a1a24;     /* Elevated surfaces */
+  --bg-card: #16161e;
+
+  --accent-primary: #00d4ff;   /* Cyan - primary actions */
+  --accent-secondary: #7b61ff; /* Purple - secondary */
+  --accent-success: #00ff88;   /* Green - success states */
+  --accent-warning: #ffaa00;   /* Orange - warnings */
+  --accent-danger: #ff4757;    /* Red - errors */
+
+  --text-primary: #ffffff;
+  --text-secondary: #a0a0b0;
+  --text-muted: #6b6b7b;
+
+  --border-color: #2a2a3a;
+  --border-glow: rgba(0, 212, 255, 0.3);
+}
+```
+
+### Visual Effects
+- .glow-cyan - Cyan box shadow glow
+- .glow-purple - Purple box shadow glow
+- .gradient-border - Animated gradient border
+- .animate-pulse-glow - Pulsing opacity animation
+
+## Application States
+
+```typescript
+type AppState = 'idle' | 'confirming' | 'investigating' | 'ready' | 'conversation';
+```
+
+### State Flow
+1. **idle** - Show investigation input
+2. **confirming** - Show identity candidates for confirmation
+3. **investigating** - Show scraping progress
+4. **ready** - Show completed investigation + start conversation button
+5. **conversation** - Show voice chat interface
+
+## Components
+
+### InvestigationInput
+- Text input for target name
+- Optional context field (expandable)
+- Submit button with loading state
+- Helper text explaining the process
+
+Props: `{ onSubmit: (name, context?) => void, isLoading: boolean }`
+
+### IdentityConfirmation
+- Display identity candidates as clickable cards
+- Show name, description, confidence score, source badges
+- Confirm button per candidate
+- Reject button to restart search
+
+Props: `{ candidates, onConfirm: (id) => void, onReject: () => void, targetName }`
+
+### InvestigationProgress
+- Header with target name and status
+- Grid of source icons (LinkedIn, Twitter, etc.)
+- Each source shows: pending/scraping/completed state
+- Stats bar: sources scraped, data points collected
+- Completion indicator when ready
+
+Props: `{ investigation: InvestigationResult }`
+
+### VoiceConversation
+- Header with persona info and controls
+- Message history (chat bubble style)
+- Voice input button (Web Speech API)
+- Text input fallback
+- Audio playback for responses
+- End conversation button
+
+Props: `{ persona: PersonaModel, onEnd: () => void }`
+
+## Page Structure (app/page.tsx)
+
+```typescript
+export default function Home() {
+  const [appState, setAppState] = useState<AppState>('idle');
+  const [investigation, setInvestigation] = useState<InvestigationResult | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // Poll for investigation status when investigating
+  useEffect(() => { /* polling logic */ }, [investigation?.targetId]);
+
+  // Event handlers
+  const handleInvestigate = async (name, context?) => { /* POST /api/investigate */ };
+  const handleConfirmIdentity = async (candidateId) => { /* POST /api/confirm */ };
+  const handleRejectIdentity = () => { /* reset to idle */ };
+  const handleStartConversation = () => { /* set appState to conversation */ };
+  const handleEndConversation = () => { /* set appState to ready */ };
+  const handleReset = () => { /* clear everything, back to idle */ };
+
+  return (
+    <AnimatePresence mode="wait">
+      {appState === 'idle' && <InvestigationInput ... />}
+      {appState === 'confirming' && <IdentityConfirmation ... />}
+      {appState === 'investigating' && <InvestigationProgress ... />}
+      {appState === 'ready' && <InvestigationProgress ... /> + <StartButton />}
+      {appState === 'conversation' && <VoiceConversation ... />}
+    </AnimatePresence>
+  );
+}
+```
+
+## API Routes
+
+### POST /api/investigate
+Start new investigation, return with identity candidates
+
+### POST /api/confirm
+Confirm identity selection, trigger scraping
+
+### GET /api/status/[targetId]
+Poll for investigation status updates
+
+### POST /api/chat
+Send message to persona, get response
+
+### POST /api/tts
+Convert text to speech audio
+
+## Responsive Design
+- Mobile-first approach
+- Grid adjusts for screen size
+- Touch-friendly buttons and inputs
+
+## Accessibility
+- Semantic HTML
+- ARIA labels on interactive elements
+- Keyboard navigation support
+- Focus states on all controls
+
+## Security
+- All API calls go through Next.js API routes
+- No secrets exposed to client
+- Input sanitization
+
+## Exports
+- Page component (default export)
+- All child components from /app/components/
