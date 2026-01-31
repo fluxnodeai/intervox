@@ -1,17 +1,16 @@
 /**
  * Orchestrator Module
  *
- * Central coordinator that manages the full investigation pipeline:
- * 1. Receive investigation request
- * 2. Find identity candidates
- * 3. Await user confirmation
- * 4. Trigger comprehensive scraping
+ * Central coordinator for the full investigation pipeline:
+ * 1. Receive name input
+ * 2. Find identity candidates via rtrvr.ai
+ * 3. User confirms identity
+ * 4. Deep scrape 100+ pages
  * 5. Build persona
- * 6. Return ready-to-converse persona
+ * 6. Enable voice conversation
  */
 
 import { config } from "@/shared/config";
-import Anthropic from "@anthropic-ai/sdk";
 import { v4 as uuidv4 } from "uuid";
 import {
   InvestigationRequest,
@@ -23,18 +22,16 @@ import {
 } from "@/shared/types";
 import {
   findIdentityCandidates,
-  scrapeAll,
+  deepScrape,
   getAvailableSources,
+  ScrapingProgress,
 } from "@/modules/scraper-swarm/src";
 import { buildPersona } from "@/modules/persona-engine/src";
+import { startConversation } from "@/modules/voice-interface/src";
 
-// Initialize Anthropic client for orchestration logic
-const anthropic = new Anthropic({
-  apiKey: config.anthropic.apiKey,
-});
-
-// In-memory store for investigations (in production, use a database)
+// In-memory store for investigations
 const investigations = new Map<string, InvestigationResult>();
+const progressCallbacks = new Map<string, (progress: ScrapingProgress) => void>();
 
 // ============================================
 // Investigation Pipeline
@@ -42,7 +39,7 @@ const investigations = new Map<string, InvestigationResult>();
 
 /**
  * Start a new investigation
- * Returns candidates for identity confirmation
+ * First step: Find identity candidates for confirmation
  */
 export async function startInvestigation(
   request: InvestigationRequest
@@ -59,18 +56,18 @@ export async function startInvestigation(
     scrapedData: [],
   };
 
-  // Find identity candidates
+  // Find identity candidates using rtrvr.ai
   try {
+    console.log(`Starting investigation for: ${request.targetName}`);
     const candidates = await findIdentityCandidates(
       request.targetName,
       request.targetContext
     );
 
     investigation.identityCandidates = candidates;
-
-    // If only one high-confidence match, we might auto-confirm
-    // But for safety, always ask for confirmation
+    console.log(`Found ${candidates.length} candidates`);
   } catch (error) {
+    console.error('Error finding candidates:', error);
     investigation.status = "error";
     investigation.error =
       error instanceof Error ? error.message : "Failed to find candidates";
@@ -82,7 +79,7 @@ export async function startInvestigation(
 }
 
 /**
- * Confirm identity and proceed with full investigation
+ * Confirm identity and proceed with deep investigation
  */
 export async function confirmIdentity(
   targetId: string,
@@ -95,8 +92,20 @@ export async function confirmIdentity(
   }
 
   if (!confirmation.confirmed) {
-    investigation.status = "error";
-    investigation.error = "Identity not confirmed";
+    // User said no - they can provide additional context
+    if (confirmation.additionalContext) {
+      // Re-search with additional context
+      const candidates = await findIdentityCandidates(
+        investigation.targetName,
+        confirmation.additionalContext
+      );
+      investigation.identityCandidates = candidates;
+      investigation.status = "confirming_identity";
+    } else {
+      investigation.status = "error";
+      investigation.error = "Identity not confirmed";
+    }
+    investigations.set(targetId, investigation);
     return investigation;
   }
 
@@ -105,57 +114,78 @@ export async function confirmIdentity(
     (c) => c.id === confirmation.selectedCandidateId
   );
 
-  if (!confirmedCandidate) {
-    // If no specific candidate selected, use the first one with additional context
-    investigation.confirmedIdentity = {
-      id: uuidv4(),
-      name: investigation.targetName,
-      description: confirmation.additionalContext || "",
-      confidence: 70,
-      sources: [],
-    };
-  } else {
-    investigation.confirmedIdentity = confirmedCandidate;
+  if (!confirmedCandidate && !confirmation.additionalContext) {
+    investigation.status = "error";
+    investigation.error = "No candidate selected";
+    investigations.set(targetId, investigation);
+    return investigation;
   }
 
-  // Update status and start scraping
+  // Set confirmed identity
+  investigation.confirmedIdentity = confirmedCandidate || {
+    id: uuidv4(),
+    name: investigation.targetName,
+    description: confirmation.additionalContext || "",
+    confidence: 70,
+    sources: [],
+  };
+
+  // Update status and start deep scraping
   investigation.status = "scraping";
   investigations.set(targetId, investigation);
+
+  console.log(`Identity confirmed: ${investigation.confirmedIdentity.name}`);
+  console.log(`Starting deep scrape...`);
 
   // Run the full investigation asynchronously
   runFullInvestigation(targetId).catch((error) => {
     console.error(`Investigation ${targetId} failed:`, error);
-    investigation.status = "error";
-    investigation.error =
-      error instanceof Error ? error.message : "Investigation failed";
-    investigations.set(targetId, investigation);
+    const inv = investigations.get(targetId);
+    if (inv) {
+      inv.status = "error";
+      inv.error = error instanceof Error ? error.message : "Investigation failed";
+      investigations.set(targetId, inv);
+    }
   });
 
   return investigation;
 }
 
 /**
- * Run the full investigation pipeline (scraping + persona building)
+ * Run the full investigation pipeline
  */
 async function runFullInvestigation(targetId: string): Promise<void> {
   const investigation = investigations.get(targetId);
   if (!investigation || !investigation.confirmedIdentity) return;
 
-  // Scrape all sources
-  const sources = getAvailableSources();
-
   try {
-    const scrapedData = await scrapeAll({
-      targetName: investigation.targetName,
-      sources,
-      confirmedIdentity: investigation.confirmedIdentity,
-    });
+    // Deep scrape with progress callback
+    const scrapedData = await deepScrape(
+      investigation.targetName,
+      investigation.confirmedIdentity,
+      (progress) => {
+        // Update investigation with progress
+        investigation.sourcesScraped = progress.scrapedPages;
+        investigation.dataPoints = countDataPoints(investigation.scrapedData);
+
+        // Notify any listeners
+        const callback = progressCallbacks.get(targetId);
+        if (callback) {
+          callback(progress);
+        }
+
+        investigations.set(targetId, investigation);
+      }
+    );
 
     investigation.scrapedData = scrapedData;
     investigation.sourcesScraped = scrapedData.length;
     investigation.dataPoints = countDataPoints(scrapedData);
     investigation.status = "building_persona";
     investigations.set(targetId, investigation);
+
+    console.log(`Scraped ${scrapedData.length} sources, ${investigation.dataPoints} data points`);
+    console.log(`Building persona...`);
 
     // Build persona from scraped data
     const persona = await buildPersona(
@@ -166,13 +196,37 @@ async function runFullInvestigation(targetId: string): Promise<void> {
 
     investigation.persona = persona;
     investigation.status = "ready";
+
+    // Pre-create conversation session
+    const session = await startConversation(persona);
+    investigation.conversationId = session.id;
+
     investigations.set(targetId, investigation);
+    console.log(`Investigation complete. Persona ready for conversation.`);
+
   } catch (error) {
+    console.error('Investigation error:', error);
     investigation.status = "error";
-    investigation.error =
-      error instanceof Error ? error.message : "Investigation failed";
+    investigation.error = error instanceof Error ? error.message : "Investigation failed";
     investigations.set(targetId, investigation);
   }
+}
+
+/**
+ * Register a progress callback for an investigation
+ */
+export function onProgress(
+  targetId: string,
+  callback: (progress: ScrapingProgress) => void
+): void {
+  progressCallbacks.set(targetId, callback);
+}
+
+/**
+ * Unregister progress callback
+ */
+export function offProgress(targetId: string): void {
+  progressCallbacks.delete(targetId);
 }
 
 /**
@@ -196,6 +250,7 @@ function countDataPoints(data: ScrapedData[]): number {
       (d.currentRole ? 1 : 0) +
       (d.company ? 1 : 0) +
       (d.bio ? 1 : 0) +
+      (d.location ? 1 : 0) +
       (d.quotes?.length || 0) +
       (d.opinions?.length || 0) +
       (d.education?.length || 0) +
@@ -206,7 +261,7 @@ function countDataPoints(data: ScrapedData[]): number {
 }
 
 /**
- * Quick scrape for demo - skip identity confirmation
+ * Quick investigate - for demos, skip identity confirmation
  */
 export async function quickInvestigate(
   request: InvestigationRequest
@@ -231,36 +286,15 @@ export async function quickInvestigate(
 
   investigations.set(targetId, investigation);
 
-  // Determine sources based on depth
-  let sources = getAvailableSources();
-  if (request.depth === "quick") {
-    sources = ["google", "linkedin", "twitter"];
-  } else if (request.depth === "standard") {
-    sources = ["google", "linkedin", "twitter", "wikipedia", "news"];
-  }
+  // Run investigation in background
+  runFullInvestigation(targetId).catch(console.error);
 
-  try {
-    const scrapedData = await scrapeAll({
-      targetName: request.targetName,
-      targetContext: request.targetContext,
-      sources,
-    });
-
-    investigation.scrapedData = scrapedData;
-    investigation.sourcesScraped = scrapedData.length;
-    investigation.dataPoints = countDataPoints(scrapedData);
-    investigation.status = "building_persona";
-
-    const persona = await buildPersona(targetId, request.targetName, scrapedData);
-
-    investigation.persona = persona;
-    investigation.status = "ready";
-  } catch (error) {
-    investigation.status = "error";
-    investigation.error =
-      error instanceof Error ? error.message : "Investigation failed";
-  }
-
-  investigations.set(targetId, investigation);
   return investigation;
+}
+
+/**
+ * Get all investigations (for debugging)
+ */
+export function getAllInvestigations(): InvestigationResult[] {
+  return Array.from(investigations.values());
 }

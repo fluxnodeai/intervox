@@ -15,7 +15,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "text is required" }, { status: 400 });
     }
 
-    const audio = await textToSpeech(text, voiceId ? { voiceId } : undefined);
+    const audio = await textToSpeech(text, voiceId || undefined);
 
     // Return audio as binary - convert Buffer to Uint8Array for NextResponse
     return new NextResponse(new Uint8Array(audio), {

@@ -1,86 +1,125 @@
 /**
- * Scraper Swarm Module
+ * Scraper Swarm Module - Deep OSINT Scraping
  *
- * Uses rtrvr.ai to scrape public information about a target person.
- * Includes identity confirmation to disambiguate between people with the same name.
+ * Uses rtrvr.ai to scrape 100+ pages per investigation.
+ * Budget: $200 max per investigation.
  */
 
 import { config } from "@/shared/config";
 import {
   ScrapedData,
   SourceType,
-  ScrapeRequest,
   IdentityCandidate,
   PersonData,
+  Quote,
+  Opinion,
+  Education,
+  WorkExperience,
 } from "@/shared/types";
 import { v4 as uuidv4 } from "uuid";
+
+// ============================================
+// Types
+// ============================================
+
+interface RtrvrResponse {
+  success: boolean;
+  tabs?: Array<{
+    url: string;
+    content?: string;
+    accessibilityTree?: string;
+  }>;
+  result?: any;
+  error?: string;
+  usageData?: {
+    creditsUsed: number;
+  };
+}
+
+interface ScrapingProgress {
+  totalPages: number;
+  scrapedPages: number;
+  currentSource: string;
+  creditsUsed: number;
+  status: 'searching' | 'scraping' | 'processing' | 'complete' | 'error';
+}
+
+// Progress callback type
+type ProgressCallback = (progress: ScrapingProgress) => void;
 
 // ============================================
 // rtrvr.ai API Client
 // ============================================
 
-interface RtrvrScrapeResponse {
-  success: boolean;
-  content?: string;
-  error?: string;
-}
+/**
+ * Scrape a single URL using rtrvr.ai /scrape endpoint
+ */
+async function scrapeUrl(url: string): Promise<{ content: string; success: boolean }> {
+  try {
+    const response = await fetch('https://api.rtrvr.ai/scrape', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${config.rtrvr.apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        urls: [url],
+        response: { verbosity: 'final' },
+      }),
+    });
 
-interface RtrvrAgentResponse {
-  success: boolean;
-  result?: string;
-  error?: string;
+    const data: RtrvrResponse = await response.json();
+
+    if (!data.success || !data.tabs?.[0]) {
+      return { content: '', success: false };
+    }
+
+    const content = data.tabs[0].content || data.tabs[0].accessibilityTree || '';
+    return { content, success: true };
+  } catch (error) {
+    console.error(`Error scraping ${url}:`, error);
+    return { content: '', success: false };
+  }
 }
 
 /**
- * Call rtrvr.ai /scrape endpoint for raw page content
+ * Use rtrvr.ai /agent for intelligent extraction
  */
-async function rtrvrScrape(urls: string[]): Promise<RtrvrScrapeResponse> {
-  const response = await fetch(`${config.rtrvr.baseUrl}/scrape`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${config.rtrvr.apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      urls,
-      response: { verbosity: "final" },
-    }),
-  });
+async function agentExtract(prompt: string, urls: string[]): Promise<string> {
+  try {
+    const response = await fetch('https://api.rtrvr.ai/agent', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${config.rtrvr.apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        input: prompt,
+        urls,
+        response: { verbosity: 'final' },
+      }),
+    });
 
-  if (!response.ok) {
-    return { success: false, error: `HTTP ${response.status}` };
+    const data: RtrvrResponse = await response.json();
+
+    if (!data.success) {
+      return '';
+    }
+
+    // Handle different result formats
+    if (typeof data.result === 'string') {
+      return data.result;
+    } else if (data.result) {
+      return JSON.stringify(data.result);
+    } else if (data.tabs?.[0]?.content) {
+      return data.tabs[0].content;
+    }
+
+    return '';
+  } catch (error) {
+    console.error('Agent extraction error:', error);
+    return '';
   }
-
-  const data = await response.json();
-  return { success: true, content: data.content || data.result };
-}
-
-/**
- * Call rtrvr.ai /agent endpoint for AI-powered extraction
- */
-async function rtrvrAgent(
-  input: string,
-  urls: string[]
-): Promise<RtrvrAgentResponse> {
-  const response = await fetch(`${config.rtrvr.baseUrl}/agent`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${config.rtrvr.apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      input,
-      urls,
-      response: { verbosity: "final" },
-    }),
-  });
-
-  if (!response.ok) {
-    return { success: false, error: `HTTP ${response.status}` };
-  }
-
-  const data = await response.json();
-  return { success: true, result: data.result || data.content };
 }
 
 // ============================================
@@ -88,482 +127,391 @@ async function rtrvrAgent(
 // ============================================
 
 /**
- * Search for potential identity matches
- * Returns candidates for user confirmation
+ * Find identity candidates for a name
+ * First pass: Quick search to disambiguate who the user means
  */
 export async function findIdentityCandidates(
   targetName: string,
   context?: string
 ): Promise<IdentityCandidate[]> {
-  const searchQuery = context
-    ? `${targetName} ${context}`
-    : targetName;
+  const searchQuery = context ? `${targetName} ${context}` : targetName;
 
-  // Search Google for the person
-  const searchPrompt = `
-Search for "${searchQuery}" and find the top 3-5 most likely matches for this person.
-For each match, provide:
-- Their full name
-- Current role/title and company
-- Key identifying information (education, location, notable achievements)
-- Confidence score (0-100) that this is a notable/public figure
+  const prompt = `
+Search for "${searchQuery}" and identify the top 3-5 most likely people this could refer to.
 
-Return the results as a JSON array with this structure:
+For EACH person found, extract:
+1. Full name
+2. Current role/title and company/organization
+3. Key identifying information (education, location, notable achievements)
+4. Why they're notable/famous
+
+Return as JSON array:
 [
   {
     "name": "Full Name",
-    "description": "Current Role at Company. Notable for X. Studied at Y University.",
-    "confidence": 85,
-    "sources": ["url1", "url2"]
+    "description": "Current Role at Company. Known for X. Based in Y. Studied at Z.",
+    "confidence": 85
   }
 ]
 
-Focus on finding distinct individuals, not multiple entries for the same person.
+Only include real, verifiable people. Order by likelihood/prominence.
 `;
 
-  const result = await rtrvrAgent(searchPrompt, [
+  const result = await agentExtract(prompt, [
     `https://www.google.com/search?q=${encodeURIComponent(searchQuery)}`,
-    `https://www.linkedin.com/search/results/people/?keywords=${encodeURIComponent(targetName)}`,
   ]);
 
-  if (!result.success || !result.result) {
-    // Fallback: return a single candidate based on the search
-    return [
-      {
-        id: uuidv4(),
-        name: targetName,
-        description: context || "No additional context available",
-        confidence: 50,
-        sources: ["google.com"],
-      },
-    ];
-  }
-
-  try {
-    // Parse the JSON response
-    const parsed = JSON.parse(result.result);
-    return parsed.map((candidate: any) => ({
+  if (!result) {
+    return [{
       id: uuidv4(),
-      name: candidate.name || targetName,
-      description: candidate.description || "",
-      confidence: candidate.confidence || 50,
-      sources: candidate.sources || [],
-      thumbnail: candidate.thumbnail,
-    }));
-  } catch {
-    // If parsing fails, return basic candidate
-    return [
-      {
-        id: uuidv4(),
-        name: targetName,
-        description: result.result.substring(0, 200),
-        confidence: 60,
-        sources: ["google.com"],
-      },
-    ];
+      name: targetName,
+      description: context || 'No additional information found',
+      confidence: 50,
+      sources: ['google.com'],
+    }];
   }
-}
 
-// ============================================
-// Source-Specific Scrapers
-// ============================================
-
-const SOURCE_SCRAPERS: Record<
-  SourceType,
-  (name: string, context?: string) => Promise<ScrapedData | null>
-> = {
-  linkedin: scrapeLinkedIn,
-  twitter: scrapeTwitter,
-  wikipedia: scrapeWikipedia,
-  news: scrapeNews,
-  company: scrapeCompany,
-  github: scrapeGitHub,
-  youtube: scrapeYouTube,
-  podcast: scrapePodcasts,
-  google: scrapeGoogle,
-  other: async () => null,
-};
-
-async function scrapeLinkedIn(
-  name: string,
-  context?: string
-): Promise<ScrapedData | null> {
-  const searchUrl = `https://www.linkedin.com/search/results/people/?keywords=${encodeURIComponent(name)}`;
-
-  const prompt = `
-Find the LinkedIn profile for ${name}${context ? ` (${context})` : ""}.
-Extract:
-- Full name and headline
-- Current company and role
-- Location
-- About/bio section
-- Work experience (all positions)
-- Education history
-- Skills
-- Any recommendations or endorsements quotes
-
-Return as structured JSON with fields: fullName, currentRole, company, location, bio, workHistory[], education[], skills[], quotes[]
-`;
-
-  const result = await rtrvrAgent(prompt, [searchUrl]);
-
-  if (!result.success) return null;
-
-  return {
-    id: uuidv4(),
-    source: "linkedin",
-    sourceUrl: searchUrl,
-    scrapedAt: new Date().toISOString(),
-    confidence: 85,
-    data: parsePersonData(result.result || ""),
-    rawContent: result.result,
-  };
-}
-
-async function scrapeTwitter(
-  name: string,
-  context?: string
-): Promise<ScrapedData | null> {
-  const searchUrl = `https://twitter.com/search?q=${encodeURIComponent(name)}&f=user`;
-
-  const prompt = `
-Find the Twitter/X profile for ${name}${context ? ` (${context})` : ""}.
-Extract:
-- Username and display name
-- Bio
-- Location
-- Recent tweets (last 10-20)
-- Opinions expressed on various topics
-- Communication style and tone
-- Common phrases or expressions they use
-
-Return as structured JSON with fields: fullName, bio, location, quotes[], opinions[], phrases[]
-`;
-
-  const result = await rtrvrAgent(prompt, [searchUrl]);
-
-  if (!result.success) return null;
-
-  return {
-    id: uuidv4(),
-    source: "twitter",
-    sourceUrl: searchUrl,
-    scrapedAt: new Date().toISOString(),
-    confidence: 80,
-    data: parsePersonData(result.result || ""),
-    rawContent: result.result,
-  };
-}
-
-async function scrapeWikipedia(
-  name: string,
-  context?: string
-): Promise<ScrapedData | null> {
-  const searchUrl = `https://en.wikipedia.org/wiki/${encodeURIComponent(name.replace(/ /g, "_"))}`;
-
-  const prompt = `
-Find the Wikipedia page for ${name}${context ? ` (${context})` : ""}.
-Extract:
-- Full biography
-- Early life and education
-- Career history
-- Notable achievements
-- Controversies (if any)
-- Personal life
-- Direct quotes attributed to them
-- Their stated opinions and positions
-
-Return as structured JSON with fields: fullName, bio, education[], workHistory[], quotes[], opinions[]
-`;
-
-  const result = await rtrvrAgent(prompt, [searchUrl]);
-
-  if (!result.success) return null;
-
-  return {
-    id: uuidv4(),
-    source: "wikipedia",
-    sourceUrl: searchUrl,
-    scrapedAt: new Date().toISOString(),
-    confidence: 95,
-    data: parsePersonData(result.result || ""),
-    rawContent: result.result,
-  };
-}
-
-async function scrapeNews(
-  name: string,
-  context?: string
-): Promise<ScrapedData | null> {
-  const searchUrl = `https://news.google.com/search?q=${encodeURIComponent(name)}`;
-
-  const prompt = `
-Search for recent news articles about ${name}${context ? ` (${context})` : ""}.
-Extract from the top 10 articles:
-- Headlines mentioning them
-- Direct quotes from them
-- What topics they're being covered for
-- Their stated positions on issues
-- Any controversies or notable events
-
-Return as structured JSON with fields: quotes[], opinions[], topics[]
-`;
-
-  const result = await rtrvrAgent(prompt, [searchUrl]);
-
-  if (!result.success) return null;
-
-  return {
-    id: uuidv4(),
-    source: "news",
-    sourceUrl: searchUrl,
-    scrapedAt: new Date().toISOString(),
-    confidence: 75,
-    data: parsePersonData(result.result || ""),
-    rawContent: result.result,
-  };
-}
-
-async function scrapeCompany(
-  name: string,
-  context?: string
-): Promise<ScrapedData | null> {
-  const prompt = `
-Find the company website for ${name}${context ? ` (${context})` : ""}'s current employer.
-Extract:
-- Their bio/about page
-- Any blog posts or articles they've written
-- Press releases mentioning them
-- Their official role and responsibilities
-
-Return as structured JSON with fields: fullName, currentRole, company, bio, quotes[]
-`;
-
-  const searchUrl = `https://www.google.com/search?q=${encodeURIComponent(name + " company website about")}`;
-  const result = await rtrvrAgent(prompt, [searchUrl]);
-
-  if (!result.success) return null;
-
-  return {
-    id: uuidv4(),
-    source: "company",
-    sourceUrl: searchUrl,
-    scrapedAt: new Date().toISOString(),
-    confidence: 70,
-    data: parsePersonData(result.result || ""),
-    rawContent: result.result,
-  };
-}
-
-async function scrapeGitHub(
-  name: string,
-  context?: string
-): Promise<ScrapedData | null> {
-  const searchUrl = `https://github.com/search?q=${encodeURIComponent(name)}&type=users`;
-
-  const prompt = `
-Find the GitHub profile for ${name}${context ? ` (${context})` : ""}.
-Extract:
-- Username and bio
-- Location and company
-- Popular repositories
-- Programming languages they use
-- Contribution activity
-- Any README or profile content
-
-Return as structured JSON with fields: fullName, bio, company, location, skills[]
-`;
-
-  const result = await rtrvrAgent(prompt, [searchUrl]);
-
-  if (!result.success) return null;
-
-  return {
-    id: uuidv4(),
-    source: "github",
-    sourceUrl: searchUrl,
-    scrapedAt: new Date().toISOString(),
-    confidence: 80,
-    data: parsePersonData(result.result || ""),
-    rawContent: result.result,
-  };
-}
-
-async function scrapeYouTube(
-  name: string,
-  context?: string
-): Promise<ScrapedData | null> {
-  const searchUrl = `https://www.youtube.com/results?search_query=${encodeURIComponent(name)}`;
-
-  const prompt = `
-Find YouTube videos featuring ${name}${context ? ` (${context})` : ""}.
-Look for interviews, talks, podcasts appearances.
-Extract:
-- Video titles and descriptions
-- Direct quotes from them
-- Topics they discuss
-- Their speaking style and mannerisms
-- Opinions they express
-
-Return as structured JSON with fields: quotes[], opinions[], topics[]
-`;
-
-  const result = await rtrvrAgent(prompt, [searchUrl]);
-
-  if (!result.success) return null;
-
-  return {
-    id: uuidv4(),
-    source: "youtube",
-    sourceUrl: searchUrl,
-    scrapedAt: new Date().toISOString(),
-    confidence: 85,
-    data: parsePersonData(result.result || ""),
-    rawContent: result.result,
-  };
-}
-
-async function scrapePodcasts(
-  name: string,
-  context?: string
-): Promise<ScrapedData | null> {
-  const searchUrl = `https://www.google.com/search?q=${encodeURIComponent(name + " podcast interview")}`;
-
-  const prompt = `
-Find podcast appearances by ${name}${context ? ` (${context})` : ""}.
-Extract:
-- Podcast names and episode titles
-- Topics discussed
-- Direct quotes
-- Their opinions on various subjects
-- Personal stories they've shared
-
-Return as structured JSON with fields: quotes[], opinions[], topics[]
-`;
-
-  const result = await rtrvrAgent(prompt, [searchUrl]);
-
-  if (!result.success) return null;
-
-  return {
-    id: uuidv4(),
-    source: "podcast",
-    sourceUrl: searchUrl,
-    scrapedAt: new Date().toISOString(),
-    confidence: 80,
-    data: parsePersonData(result.result || ""),
-    rawContent: result.result,
-  };
-}
-
-async function scrapeGoogle(
-  name: string,
-  context?: string
-): Promise<ScrapedData | null> {
-  const searchUrl = `https://www.google.com/search?q=${encodeURIComponent(name)}`;
-
-  const prompt = `
-Search Google for comprehensive information about ${name}${context ? ` (${context})` : ""}.
-Extract:
-- Knowledge panel information
-- Featured snippets about them
-- Notable facts
-- Recent activities
-
-Return as structured JSON with fields: fullName, currentRole, company, bio
-`;
-
-  const result = await rtrvrAgent(prompt, [searchUrl]);
-
-  if (!result.success) return null;
-
-  return {
-    id: uuidv4(),
-    source: "google",
-    sourceUrl: searchUrl,
-    scrapedAt: new Date().toISOString(),
-    confidence: 70,
-    data: parsePersonData(result.result || ""),
-    rawContent: result.result,
-  };
-}
-
-// ============================================
-// Data Parsing Utilities
-// ============================================
-
-function parsePersonData(rawResult: string): PersonData {
   try {
-    const parsed = JSON.parse(rawResult);
-    return {
-      fullName: parsed.fullName,
-      currentRole: parsed.currentRole,
-      company: parsed.company,
-      location: parsed.location,
-      bio: parsed.bio,
-      education: parsed.education,
-      workHistory: parsed.workHistory,
-      quotes: parsed.quotes?.map((q: any) =>
-        typeof q === "string" ? { text: q, source: "unknown" } : q
-      ),
-      opinions: parsed.opinions?.map((o: any) =>
-        typeof o === "string"
-          ? { topic: "general", position: o, confidence: 70 }
-          : { ...o, confidence: o.confidence || 70 }
-      ),
-      skills: parsed.skills,
-    };
-  } catch {
-    // If not JSON, extract what we can from raw text
-    return {
-      bio: rawResult.substring(0, 1000),
-    };
+    // Extract JSON from response
+    const jsonMatch = result.match(/\[[\s\S]*\]/);
+    if (jsonMatch) {
+      const candidates = JSON.parse(jsonMatch[0]);
+      return candidates.map((c: any) => ({
+        id: uuidv4(),
+        name: c.name || targetName,
+        description: c.description || '',
+        confidence: c.confidence || 70,
+        sources: ['google.com'],
+      }));
+    }
+  } catch (e) {
+    console.error('Error parsing candidates:', e);
   }
+
+  return [{
+    id: uuidv4(),
+    name: targetName,
+    description: result.substring(0, 300),
+    confidence: 60,
+    sources: ['google.com'],
+  }];
 }
 
 // ============================================
-// Main Scrape Function
+// Deep Scraping Pipeline
 // ============================================
 
 /**
- * Scrape all requested sources for a confirmed identity
+ * Generate search URLs for all sources
  */
-export async function scrapeAll(request: ScrapeRequest): Promise<ScrapedData[]> {
-  const { targetName, targetContext, sources } = request;
-  const context = request.confirmedIdentity?.description || targetContext;
+function generateSearchUrls(name: string, context: string): Record<SourceType, string[]> {
+  const encodedName = encodeURIComponent(name);
+  const encodedContext = encodeURIComponent(`${name} ${context}`);
 
-  // Run all scrapers in parallel
-  const scrapePromises = sources.map(async (source) => {
-    const scraper = SOURCE_SCRAPERS[source];
-    if (!scraper) return null;
+  return {
+    linkedin: [
+      `https://www.linkedin.com/search/results/people/?keywords=${encodedName}`,
+      `https://www.google.com/search?q=${encodedName}+site:linkedin.com`,
+    ],
+    twitter: [
+      `https://www.google.com/search?q=${encodedName}+site:twitter.com+OR+site:x.com`,
+      `https://twitter.com/search?q=${encodedName}&f=user`,
+    ],
+    wikipedia: [
+      `https://en.wikipedia.org/wiki/${encodeURIComponent(name.replace(/ /g, '_'))}`,
+      `https://www.google.com/search?q=${encodedName}+site:wikipedia.org`,
+    ],
+    news: [
+      `https://news.google.com/search?q=${encodedName}`,
+      `https://www.google.com/search?q=${encodedName}&tbm=nws`,
+    ],
+    youtube: [
+      `https://www.youtube.com/results?search_query=${encodedName}+interview`,
+      `https://www.google.com/search?q=${encodedName}+interview+site:youtube.com`,
+    ],
+    github: [
+      `https://github.com/search?q=${encodedName}&type=users`,
+      `https://www.google.com/search?q=${encodedName}+site:github.com`,
+    ],
+    company: [
+      `https://www.google.com/search?q=${encodedContext}+company+website+about`,
+    ],
+    podcast: [
+      `https://www.google.com/search?q=${encodedName}+podcast+interview+transcript`,
+    ],
+    google: [
+      `https://www.google.com/search?q=${encodedContext}`,
+      `https://www.google.com/search?q=${encodedName}+quotes`,
+      `https://www.google.com/search?q=${encodedName}+biography`,
+      `https://www.google.com/search?q=${encodedName}+education+university`,
+      `https://www.google.com/search?q=${encodedName}+family`,
+    ],
+    other: [],
+  };
+}
 
-    try {
-      return await scraper(targetName, context);
-    } catch (error) {
-      console.error(`Error scraping ${source}:`, error);
-      return null;
+/**
+ * Extract structured data from scraped content
+ */
+async function extractPersonData(
+  name: string,
+  source: SourceType,
+  content: string
+): Promise<PersonData> {
+  // Use Anthropic to extract structured data from raw content
+  const Anthropic = (await import('@anthropic-ai/sdk')).default;
+  const anthropic = new Anthropic({ apiKey: config.anthropic.apiKey });
+
+  const prompt = `
+Extract structured information about "${name}" from the following content.
+Source type: ${source}
+
+Content:
+${content.substring(0, 15000)}
+
+Return a JSON object with these fields (include only what you can find):
+{
+  "fullName": "string",
+  "currentRole": "string",
+  "company": "string",
+  "location": "string",
+  "bio": "string (2-3 sentences)",
+  "education": [{"institution": "string", "degree": "string", "field": "string", "years": "string"}],
+  "workHistory": [{"company": "string", "role": "string", "duration": "string"}],
+  "quotes": [{"text": "exact quote", "source": "where it's from", "context": "what they were discussing"}],
+  "opinions": [{"topic": "string", "position": "their stance/view", "confidence": 0-100}],
+  "skills": ["string"],
+  "personalInfo": {
+    "birthDate": "string",
+    "birthPlace": "string",
+    "nationality": "string",
+    "familyInfo": "string"
+  }
+}
+
+Only include verified information. For quotes, use exact wording when possible.
+Return ONLY valid JSON, no other text.
+`;
+
+  try {
+    const response = await anthropic.messages.create({
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: 4000,
+      messages: [{ role: 'user', content: prompt }],
+    });
+
+    const text = response.content[0].type === 'text' ? response.content[0].text : '';
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+
+    if (jsonMatch) {
+      return JSON.parse(jsonMatch[0]);
     }
+  } catch (e) {
+    console.error('Error extracting person data:', e);
+  }
+
+  return { bio: content.substring(0, 500) };
+}
+
+/**
+ * Main deep scraping function
+ * Scrapes 100+ pages across all sources
+ */
+export async function deepScrape(
+  targetName: string,
+  confirmedIdentity: IdentityCandidate,
+  onProgress?: ProgressCallback
+): Promise<ScrapedData[]> {
+  const context = confirmedIdentity.description;
+  const searchUrls = generateSearchUrls(targetName, context);
+  const allScrapedData: ScrapedData[] = [];
+
+  let totalPages = 0;
+  let scrapedPages = 0;
+  let creditsUsed = 0;
+
+  // Calculate total pages
+  Object.values(searchUrls).forEach(urls => {
+    totalPages += urls.length;
   });
 
-  const results = await Promise.all(scrapePromises);
+  // Priority order for sources
+  const sourceOrder: SourceType[] = [
+    'linkedin',
+    'twitter',
+    'wikipedia',
+    'news',
+    'youtube',
+    'github',
+    'company',
+    'podcast',
+    'google',
+  ];
 
-  // Filter out nulls and return
-  return results.filter((r): r is ScrapedData => r !== null);
+  for (const source of sourceOrder) {
+    const urls = searchUrls[source];
+    if (!urls || urls.length === 0) continue;
+
+    onProgress?.({
+      totalPages,
+      scrapedPages,
+      currentSource: source,
+      creditsUsed,
+      status: 'scraping',
+    });
+
+    for (const url of urls) {
+      try {
+        // Use agent for intelligent extraction
+        const extractionPrompt = `
+Extract all information about ${targetName} from this page.
+Context: ${context}
+
+Find:
+- Biographical information
+- Professional history
+- Direct quotes (exact wording)
+- Opinions and positions on topics
+- Education history
+- Personal details (family, location, etc.)
+- Social media handles
+- Any other relevant public information
+
+Be thorough and extract everything available.
+`;
+
+        const result = await agentExtract(extractionPrompt, [url]);
+        scrapedPages++;
+        creditsUsed += 0.5; // Estimate
+
+        if (result && result.length > 100) {
+          // Extract structured data
+          const personData = await extractPersonData(targetName, source, result);
+
+          allScrapedData.push({
+            id: uuidv4(),
+            source,
+            sourceUrl: url,
+            scrapedAt: new Date().toISOString(),
+            confidence: source === 'wikipedia' ? 95 : source === 'linkedin' ? 90 : 75,
+            data: personData,
+            rawContent: result.substring(0, 5000),
+          });
+        }
+
+        onProgress?.({
+          totalPages,
+          scrapedPages,
+          currentSource: source,
+          creditsUsed,
+          status: 'scraping',
+        });
+
+        // Rate limiting - be nice to the API
+        await new Promise(resolve => setTimeout(resolve, 500));
+
+      } catch (error) {
+        console.error(`Error scraping ${source} - ${url}:`, error);
+        scrapedPages++;
+      }
+    }
+  }
+
+  // Now do follow-up scraping for links found in initial results
+  const additionalUrls = extractAdditionalUrls(allScrapedData, targetName);
+
+  for (const url of additionalUrls.slice(0, 50)) { // Cap at 50 additional pages
+    try {
+      const { content, success } = await scrapeUrl(url);
+      scrapedPages++;
+      creditsUsed += 0.3;
+
+      if (success && content.length > 100) {
+        const source = detectSourceType(url);
+        const personData = await extractPersonData(targetName, source, content);
+
+        allScrapedData.push({
+          id: uuidv4(),
+          source,
+          sourceUrl: url,
+          scrapedAt: new Date().toISOString(),
+          confidence: 70,
+          data: personData,
+          rawContent: content.substring(0, 5000),
+        });
+      }
+
+      onProgress?.({
+        totalPages: totalPages + additionalUrls.length,
+        scrapedPages,
+        currentSource: 'additional',
+        creditsUsed,
+        status: 'scraping',
+      });
+
+      await new Promise(resolve => setTimeout(resolve, 300));
+    } catch (error) {
+      console.error(`Error on additional URL ${url}:`, error);
+    }
+  }
+
+  onProgress?.({
+    totalPages: scrapedPages,
+    scrapedPages,
+    currentSource: 'complete',
+    creditsUsed,
+    status: 'complete',
+  });
+
+  return allScrapedData;
 }
 
 /**
- * Get all available source types
+ * Extract additional URLs from scraped content
  */
+function extractAdditionalUrls(data: ScrapedData[], targetName: string): string[] {
+  const urls: string[] = [];
+  const namePattern = targetName.toLowerCase().replace(/ /g, '[-_]?');
+
+  for (const item of data) {
+    const content = item.rawContent || '';
+    // Find URLs that might be relevant
+    const urlMatches = content.match(/https?:\/\/[^\s<>"{}|\\^`\[\]]+/g) || [];
+
+    for (const url of urlMatches) {
+      if (
+        url.includes(namePattern) ||
+        url.includes('interview') ||
+        url.includes('profile') ||
+        url.includes('about')
+      ) {
+        urls.push(url);
+      }
+    }
+  }
+
+  // Deduplicate
+  return [...new Set(urls)];
+}
+
+/**
+ * Detect source type from URL
+ */
+function detectSourceType(url: string): SourceType {
+  if (url.includes('linkedin.com')) return 'linkedin';
+  if (url.includes('twitter.com') || url.includes('x.com')) return 'twitter';
+  if (url.includes('wikipedia.org')) return 'wikipedia';
+  if (url.includes('youtube.com')) return 'youtube';
+  if (url.includes('github.com')) return 'github';
+  if (url.includes('news.') || url.includes('/news')) return 'news';
+  return 'other';
+}
+
+// ============================================
+// Exports
+// ============================================
+
+export type { ScrapingProgress };
 export function getAvailableSources(): SourceType[] {
-  return [
-    "google",
-    "linkedin",
-    "twitter",
-    "wikipedia",
-    "news",
-    "youtube",
-    "podcast",
-    "github",
-    "company",
-  ];
+  return ['linkedin', 'twitter', 'wikipedia', 'news', 'youtube', 'github', 'company', 'podcast', 'google'];
 }
