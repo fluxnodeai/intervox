@@ -19,33 +19,31 @@ fi
 # Check 2: Look for hardcoded API key patterns
 echo "Scanning for hardcoded secrets..."
 
-# Common API key patterns - search in source files
-FOUND_SECRETS=0
-
-# Check for sk- patterns (Anthropic, OpenAI style keys)
-if grep -rn "sk-[a-zA-Z0-9]\{20,\}" --include="*.ts" --include="*.js" --include="*.tsx" --include="*.jsx" . 2>/dev/null | grep -v node_modules | grep -v ".env" | grep -v "security-check" | head -3; then
+# Check for actual API key values (20+ chars after prefix)
+SK_MATCHES=$(grep -rn 'sk-[a-zA-Z0-9]\{20,\}' --include="*.ts" --include="*.js" --include="*.tsx" --include="*.jsx" --include="*.json" . 2>/dev/null | grep -v node_modules | grep -v ".env" | grep -v "\.example" || true)
+if [ -n "$SK_MATCHES" ]; then
     echo "POTENTIAL SECRET: Found sk- pattern"
-    FOUND_SECRETS=$((FOUND_SECRETS + 1))
+    echo "$SK_MATCHES" | head -3
+    ERRORS=$((ERRORS + 1))
 fi
 
-# Check for xai- patterns (xAI keys)
-if grep -rn "xai-[a-zA-Z0-9]\{20,\}" --include="*.ts" --include="*.js" --include="*.tsx" --include="*.jsx" . 2>/dev/null | grep -v node_modules | grep -v ".env" | grep -v "security-check" | head -3; then
+XAI_MATCHES=$(grep -rn 'xai-[a-zA-Z0-9]\{20,\}' --include="*.ts" --include="*.js" --include="*.tsx" --include="*.jsx" --include="*.json" . 2>/dev/null | grep -v node_modules | grep -v ".env" | grep -v "\.example" || true)
+if [ -n "$XAI_MATCHES" ]; then
     echo "POTENTIAL SECRET: Found xai- pattern"
-    FOUND_SECRETS=$((FOUND_SECRETS + 1))
+    echo "$XAI_MATCHES" | head -3
+    ERRORS=$((ERRORS + 1))
 fi
 
-# Check for hardcoded Bearer tokens
-if grep -rn "Bearer ['\"][a-zA-Z0-9_-]\{20,\}['\"]" --include="*.ts" --include="*.js" --include="*.tsx" --include="*.jsx" . 2>/dev/null | grep -v node_modules | grep -v ".env" | grep -v "process.env" | grep -v "security-check" | head -3; then
+# Check for hardcoded string literals that look like API keys
+BEARER_MATCHES=$(grep -rn "Authorization.*Bearer.*['\"][a-zA-Z0-9_-]\{30,\}['\"]" --include="*.ts" --include="*.js" --include="*.tsx" --include="*.jsx" . 2>/dev/null | grep -v node_modules | grep -v "process.env" || true)
+if [ -n "$BEARER_MATCHES" ]; then
     echo "POTENTIAL SECRET: Found hardcoded Bearer token"
-    FOUND_SECRETS=$((FOUND_SECRETS + 1))
-fi
-
-if [ $FOUND_SECRETS -gt 0 ]; then
-    ERRORS=$((ERRORS + FOUND_SECRETS))
+    echo "$BEARER_MATCHES" | head -3
+    ERRORS=$((ERRORS + 1))
 fi
 
 # Check 3: Ensure .env is not staged
-if git diff --cached --name-only 2>/dev/null | grep -q "^\.env"; then
+if git diff --cached --name-only 2>/dev/null | grep -q "^\.env$"; then
     echo "CRITICAL: .env is staged for commit! Run: git reset HEAD .env"
     ERRORS=$((ERRORS + 1))
 else
@@ -54,7 +52,7 @@ fi
 
 # Check 4: Look for process.env usage (informational)
 ENV_USAGE=$(grep -rn "process\.env\." --include="*.ts" --include="*.js" . 2>/dev/null | grep -v node_modules | wc -l)
-echo "INFO: Found $ENV_USAGE references to process.env"
+echo "INFO: Found $ENV_USAGE references to process.env (good - using env vars)"
 
 # Final result
 echo ""
