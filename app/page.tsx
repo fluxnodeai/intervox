@@ -2,99 +2,66 @@
 
 import { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Zap, Globe, MessageSquare } from "lucide-react";
-import InvestigationInput from "./components/InvestigationInput";
-import IdentityConfirmation from "./components/IdentityConfirmation";
-import InvestigationProgress from "./components/InvestigationProgress";
+import {
+  Search,
+  Zap,
+  MessageSquare,
+  Globe,
+  Phone,
+  ArrowRight,
+  Check,
+  X,
+  Loader2,
+  ChevronRight,
+} from "lucide-react";
+import LiveScrapingView from "./components/LiveScrapingView";
 import VoiceConversation from "./components/VoiceConversation";
-import { InvestigationResult } from "@/shared/types";
+import { InvestigationResult, IdentityCandidate } from "@/shared/types";
 
-type AppState =
-  | "idle"
-  | "confirming"
-  | "investigating"
-  | "ready"
-  | "conversation";
+type AppState = "landing" | "confirming" | "scraping" | "ready" | "calling";
 
 export default function Home() {
-  const [appState, setAppState] = useState<AppState>("idle");
-  const [investigation, setInvestigation] = useState<InvestigationResult | null>(
-    null
-  );
+  const [appState, setAppState] = useState<AppState>("landing");
+  const [targetName, setTargetName] = useState("");
+  const [additionalContext, setAdditionalContext] = useState("");
+  const [investigation, setInvestigation] = useState<InvestigationResult | null>(null);
   const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  // Poll for investigation status
-  useEffect(() => {
-    if (!investigation?.targetId) return;
-    if (investigation.status === "ready" || investigation.status === "error")
-      return;
-
-    const pollInterval = setInterval(async () => {
-      try {
-        const response = await fetch(`/api/status/${investigation.targetId}`);
-        const data = await response.json();
-
-        if (data.error) {
-          throw new Error(data.error);
-        }
-
-        setInvestigation(data);
-
-        if (data.status === "ready") {
-          setAppState("ready");
-          clearInterval(pollInterval);
-        } else if (data.status === "error") {
-          setError(data.error || "Investigation failed");
-          clearInterval(pollInterval);
-        }
-      } catch (err) {
-        console.error("Polling error:", err);
-      }
-    }, 2000);
-
-    return () => clearInterval(pollInterval);
-  }, [investigation?.targetId, investigation?.status]);
+  const [showContextInput, setShowContextInput] = useState(false);
 
   // Start investigation
-  const handleInvestigate = async (name: string, context?: string) => {
+  const handleInvestigate = async () => {
+    if (!targetName.trim()) return;
+
     setIsLoading(true);
-    setError(null);
 
     try {
       const response = await fetch("/api/investigate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          targetName: name,
-          targetContext: context,
-          depth: "standard",
-          quickMode: false,
+          targetName: targetName.trim(),
+          targetContext: additionalContext.trim() || undefined,
+          depth: "deep",
         }),
       });
 
       const data = await response.json();
-
-      if (data.error) {
-        throw new Error(data.error);
-      }
-
       setInvestigation(data);
 
-      if (data.status === "confirming_identity" && data.identityCandidates) {
+      if (data.status === "confirming_identity" && data.identityCandidates?.length) {
         setAppState("confirming");
-      } else {
-        setAppState("investigating");
+      } else if (data.status === "scraping") {
+        setAppState("scraping");
       }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to start investigation");
+    } catch (error) {
+      console.error("Investigation error:", error);
     } finally {
       setIsLoading(false);
     }
   };
 
   // Confirm identity
-  const handleConfirmIdentity = async (candidateId: string) => {
+  const handleConfirm = async (candidate: IdentityCandidate) => {
     if (!investigation) return;
 
     setIsLoading(true);
@@ -106,237 +73,410 @@ export default function Home() {
         body: JSON.stringify({
           targetId: investigation.targetId,
           confirmed: true,
-          selectedCandidateId: candidateId,
+          selectedCandidateId: candidate.id,
         }),
       });
 
       const data = await response.json();
-
-      if (data.error) {
-        throw new Error(data.error);
-      }
-
       setInvestigation(data);
-      setAppState("investigating");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to confirm identity");
+      setAppState("scraping");
+    } catch (error) {
+      console.error("Confirm error:", error);
     } finally {
       setIsLoading(false);
     }
   };
 
-  // Reject identity - go back to search
-  const handleRejectIdentity = () => {
-    setInvestigation(null);
-    setAppState("idle");
+  // Reject and provide more context
+  const handleReject = () => {
+    setShowContextInput(true);
   };
 
-  // Start conversation
-  const handleStartConversation = () => {
-    setAppState("conversation");
+  // Re-search with context
+  const handleReSearch = async () => {
+    if (!investigation || !additionalContext.trim()) return;
+
+    setIsLoading(true);
+
+    try {
+      const response = await fetch("/api/confirm", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          targetId: investigation.targetId,
+          confirmed: false,
+          additionalContext: additionalContext.trim(),
+        }),
+      });
+
+      const data = await response.json();
+      setInvestigation(data);
+      setShowContextInput(false);
+    } catch (error) {
+      console.error("Re-search error:", error);
+    } finally {
+      setIsLoading(false);
+    }
   };
 
-  // End conversation
-  const handleEndConversation = () => {
+  // Poll for status when scraping
+  useEffect(() => {
+    if (appState !== "scraping" || !investigation?.targetId) return;
+
+    const interval = setInterval(async () => {
+      try {
+        const response = await fetch(`/api/status/${investigation.targetId}`);
+        const data = await response.json();
+        setInvestigation(data);
+
+        if (data.status === "ready") {
+          setAppState("ready");
+          clearInterval(interval);
+        }
+      } catch (error) {
+        console.error("Poll error:", error);
+      }
+    }, 2000);
+
+    return () => clearInterval(interval);
+  }, [appState, investigation?.targetId]);
+
+  // Start call
+  const handleStartCall = () => {
+    setAppState("calling");
+  };
+
+  // End call
+  const handleEndCall = () => {
     setAppState("ready");
   };
 
-  // Reset everything
+  // Reset
   const handleReset = () => {
+    setAppState("landing");
+    setTargetName("");
+    setAdditionalContext("");
     setInvestigation(null);
-    setAppState("idle");
-    setError(null);
+    setShowContextInput(false);
   };
 
   return (
-    <main className="min-h-screen bg-[var(--bg-primary)]">
-      {/* Header */}
-      <header className="border-b border-[var(--border-color)]">
-        <div className="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-[var(--accent-primary)] to-[var(--accent-secondary)] flex items-center justify-center">
-              <MessageSquare className="w-5 h-5 text-white" />
-            </div>
-            <div>
-              <h1 className="text-xl font-bold text-[var(--text-primary)]">
+    <main className="min-h-screen bg-[#050508]">
+      {/* Subtle grid background */}
+      <div
+        className="fixed inset-0 opacity-[0.02]"
+        style={{
+          backgroundImage: `linear-gradient(#fff 1px, transparent 1px), linear-gradient(90deg, #fff 1px, transparent 1px)`,
+          backgroundSize: "50px 50px",
+        }}
+      />
+
+      <div className="relative z-10">
+        {/* Header */}
+        <header className="border-b border-white/5">
+          <div className="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-cyan-500 to-purple-600 flex items-center justify-center">
+                <Globe className="w-4 h-4 text-white" />
+              </div>
+              <span className="text-lg font-bold text-white tracking-tight">
                 INTERVOX
-              </h1>
-              <p className="text-xs text-[var(--text-muted)]">
-                Talk to Anyone
-              </p>
+              </span>
             </div>
+
+            {appState !== "landing" && (
+              <button
+                onClick={handleReset}
+                className="text-sm text-white/40 hover:text-white/80 transition-colors"
+              >
+                New Search
+              </button>
+            )}
           </div>
+        </header>
 
-          {appState !== "idle" && (
-            <button
-              onClick={handleReset}
-              className="px-4 py-2 text-sm text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors"
-            >
-              New Investigation
-            </button>
-          )}
-        </div>
-      </header>
-
-      {/* Main Content */}
-      <div className="max-w-7xl mx-auto px-6 py-12">
         <AnimatePresence mode="wait">
-          {/* Idle State - Show Input */}
-          {appState === "idle" && (
+          {/* LANDING STATE */}
+          {appState === "landing" && (
             <motion.div
-              key="idle"
+              key="landing"
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
-              className="space-y-12"
+              className="max-w-4xl mx-auto px-6 pt-32 pb-20"
             >
               {/* Hero */}
-              <div className="text-center space-y-4">
+              <div className="text-center mb-16">
+                <motion.h1
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className="text-6xl md:text-7xl font-bold text-white mb-4 tracking-tight"
+                >
+                  Find anyone.
+                </motion.h1>
                 <motion.h2
                   initial={{ opacity: 0, y: 20 }}
                   animate={{ opacity: 1, y: 0 }}
-                  className="text-4xl md:text-5xl font-bold text-[var(--text-primary)]"
+                  transition={{ delay: 0.1 }}
+                  className="text-6xl md:text-7xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 to-purple-500 mb-8"
                 >
-                  Talk to{" "}
-                  <span className="text-transparent bg-clip-text bg-gradient-to-r from-[var(--accent-primary)] to-[var(--accent-secondary)]">
-                    Anyone
-                  </span>
+                  Anywhere.
                 </motion.h2>
                 <motion.p
                   initial={{ opacity: 0, y: 20 }}
                   animate={{ opacity: 1, y: 0 }}
-                  transition={{ delay: 0.1 }}
-                  className="text-lg text-[var(--text-secondary)] max-w-2xl mx-auto"
+                  transition={{ delay: 0.2 }}
+                  className="text-xl text-white/50 max-w-xl mx-auto"
                 >
-                  Enter a name. We scrape everything public about them. You get
-                  a voice conversation with their digital twin.
+                  We scrape the entire internet, build their digital twin, and let you talk to them.
                 </motion.p>
               </div>
 
-              {/* Input */}
-              <InvestigationInput
-                onSubmit={handleInvestigate}
-                isLoading={isLoading}
-              />
-
-              {/* Features */}
+              {/* Stats */}
               <motion.div
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
-                transition={{ delay: 0.2 }}
-                className="grid md:grid-cols-3 gap-6 max-w-4xl mx-auto"
+                transition={{ delay: 0.3 }}
+                className="flex justify-center gap-12 mb-16 text-center"
               >
-                <div className="p-6 bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-xl">
-                  <Globe className="w-8 h-8 text-[var(--accent-primary)] mb-4" />
-                  <h3 className="font-semibold text-[var(--text-primary)] mb-2">
-                    Comprehensive Scraping
-                  </h3>
-                  <p className="text-sm text-[var(--text-muted)]">
-                    LinkedIn, Twitter, Wikipedia, news, YouTube, podcasts, and
-                    more.
-                  </p>
+                <div>
+                  <div className="text-3xl font-bold text-white">25B+</div>
+                  <div className="text-sm text-white/40">Pages indexed</div>
                 </div>
-                <div className="p-6 bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-xl">
-                  <Zap className="w-8 h-8 text-[var(--accent-secondary)] mb-4" />
-                  <h3 className="font-semibold text-[var(--text-primary)] mb-2">
-                    AI Persona Building
-                  </h3>
-                  <p className="text-sm text-[var(--text-muted)]">
-                    We synthesize personality, opinions, and speaking style from
-                    real data.
-                  </p>
+                <div>
+                  <div className="text-3xl font-bold text-white">100+</div>
+                  <div className="text-sm text-white/40">Sources per search</div>
                 </div>
-                <div className="p-6 bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-xl">
-                  <MessageSquare className="w-8 h-8 text-[var(--accent-success)] mb-4" />
-                  <h3 className="font-semibold text-[var(--text-primary)] mb-2">
-                    Voice Conversation
-                  </h3>
-                  <p className="text-sm text-[var(--text-muted)]">
-                    Natural voice chat powered by ElevenLabs and Grok.
-                  </p>
+                <div>
+                  <div className="text-3xl font-bold text-white">&lt;60s</div>
+                  <div className="text-sm text-white/40">Time to persona</div>
                 </div>
               </motion.div>
 
-              {/* Error Display */}
-              {error && (
+              {/* Search Input */}
+              <motion.div
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.4 }}
+                className="max-w-2xl mx-auto"
+              >
+                <div className="relative group">
+                  <div className="absolute -inset-1 bg-gradient-to-r from-cyan-500 to-purple-600 rounded-2xl blur opacity-25 group-hover:opacity-40 transition-opacity" />
+                  <div className="relative bg-[#0a0a0f] border border-white/10 rounded-2xl p-2">
+                    <div className="flex items-center">
+                      <Search className="w-5 h-5 text-white/30 ml-4" />
+                      <input
+                        type="text"
+                        value={targetName}
+                        onChange={(e) => setTargetName(e.target.value)}
+                        onKeyDown={(e) => e.key === "Enter" && handleInvestigate()}
+                        placeholder="Enter a name..."
+                        className="flex-1 bg-transparent px-4 py-4 text-lg text-white placeholder:text-white/30 focus:outline-none"
+                        autoFocus
+                      />
+                      <button
+                        onClick={handleInvestigate}
+                        disabled={!targetName.trim() || isLoading}
+                        className="px-6 py-3 bg-gradient-to-r from-cyan-500 to-purple-600 text-white font-semibold rounded-xl disabled:opacity-50 hover:opacity-90 transition-opacity flex items-center gap-2"
+                      >
+                        {isLoading ? (
+                          <Loader2 className="w-5 h-5 animate-spin" />
+                        ) : (
+                          <>
+                            Investigate
+                            <ArrowRight className="w-4 h-4" />
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                <p className="text-center text-white/30 text-sm mt-4">
+                  Try: Elon Musk, Sam Altman, Jensen Huang, Satya Nadella
+                </p>
+              </motion.div>
+            </motion.div>
+          )}
+
+          {/* CONFIRMING STATE */}
+          {appState === "confirming" && investigation?.identityCandidates && (
+            <motion.div
+              key="confirming"
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0 }}
+              className="max-w-2xl mx-auto px-6 py-20"
+            >
+              <div className="text-center mb-8">
+                <h2 className="text-2xl font-bold text-white mb-2">
+                  Confirm Identity
+                </h2>
+                <p className="text-white/50">
+                  We found {investigation.identityCandidates.length} potential matches for &quot;{investigation.targetName}&quot;
+                </p>
+              </div>
+
+              {!showContextInput ? (
+                <div className="space-y-3">
+                  {investigation.identityCandidates.map((candidate, i) => (
+                    <motion.button
+                      key={candidate.id}
+                      initial={{ opacity: 0, x: -20 }}
+                      animate={{ opacity: 1, x: 0 }}
+                      transition={{ delay: i * 0.1 }}
+                      onClick={() => handleConfirm(candidate)}
+                      disabled={isLoading}
+                      className="w-full p-5 bg-[#0a0a0f] border border-white/10 rounded-xl hover:border-cyan-500/50 transition-colors text-left group disabled:opacity-50"
+                    >
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <div className="flex items-center gap-3 mb-1">
+                            <h3 className="font-semibold text-white group-hover:text-cyan-400 transition-colors">
+                              {candidate.name}
+                            </h3>
+                            <span className="text-xs px-2 py-0.5 bg-cyan-500/20 text-cyan-400 rounded-full">
+                              {candidate.confidence}% match
+                            </span>
+                          </div>
+                          <p className="text-sm text-white/50 line-clamp-2">
+                            {candidate.description}
+                          </p>
+                        </div>
+                        <ChevronRight className="w-5 h-5 text-white/20 group-hover:text-cyan-400 transition-colors" />
+                      </div>
+                    </motion.button>
+                  ))}
+
+                  <button
+                    onClick={handleReject}
+                    className="w-full py-4 text-white/40 hover:text-white/80 transition-colors flex items-center justify-center gap-2"
+                  >
+                    <X className="w-4 h-4" />
+                    None of these - let me specify
+                  </button>
+                </div>
+              ) : (
                 <motion.div
-                  initial={{ opacity: 0, y: 10 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  className="max-w-2xl mx-auto p-4 bg-[var(--accent-danger)]/10 border border-[var(--accent-danger)]/30 rounded-xl text-center"
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  className="space-y-4"
                 >
-                  <p className="text-[var(--accent-danger)]">{error}</p>
+                  <p className="text-white/50 text-center">
+                    Provide more context to help identify the right person:
+                  </p>
+                  <textarea
+                    value={additionalContext}
+                    onChange={(e) => setAdditionalContext(e.target.value)}
+                    placeholder="e.g., CEO of a specific company, professor at Stanford, author of..."
+                    className="w-full p-4 bg-[#0a0a0f] border border-white/10 rounded-xl text-white placeholder:text-white/30 focus:outline-none focus:border-cyan-500/50 h-32 resize-none"
+                  />
+                  <div className="flex gap-3">
+                    <button
+                      onClick={() => setShowContextInput(false)}
+                      className="flex-1 py-3 border border-white/10 text-white/60 rounded-xl hover:bg-white/5 transition-colors"
+                    >
+                      Back
+                    </button>
+                    <button
+                      onClick={handleReSearch}
+                      disabled={!additionalContext.trim() || isLoading}
+                      className="flex-1 py-3 bg-gradient-to-r from-cyan-500 to-purple-600 text-white font-semibold rounded-xl disabled:opacity-50"
+                    >
+                      {isLoading ? (
+                        <Loader2 className="w-5 h-5 animate-spin mx-auto" />
+                      ) : (
+                        "Search Again"
+                      )}
+                    </button>
+                  </div>
                 </motion.div>
               )}
             </motion.div>
           )}
 
-          {/* Confirming Identity */}
-          {appState === "confirming" && investigation?.identityCandidates && (
+          {/* SCRAPING STATE */}
+          {appState === "scraping" && investigation && (
             <motion.div
-              key="confirming"
+              key="scraping"
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
+              className="max-w-5xl mx-auto px-6 py-12"
             >
-              <IdentityConfirmation
-                candidates={investigation.identityCandidates}
-                onConfirm={handleConfirmIdentity}
-                onReject={handleRejectIdentity}
+              <LiveScrapingView
+                targetId={investigation.targetId}
                 targetName={investigation.targetName}
+                onComplete={() => setAppState("ready")}
               />
             </motion.div>
           )}
 
-          {/* Investigation in Progress */}
-          {appState === "investigating" && investigation && (
-            <motion.div
-              key="investigating"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-            >
-              <InvestigationProgress investigation={investigation} />
-            </motion.div>
-          )}
-
-          {/* Ready - Show Start Conversation */}
+          {/* READY STATE */}
           {appState === "ready" && investigation?.persona && (
             <motion.div
               key="ready"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
               exit={{ opacity: 0 }}
-              className="space-y-8"
+              className="max-w-2xl mx-auto px-6 py-20 text-center"
             >
-              <InvestigationProgress investigation={investigation} />
-
               <motion.div
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                className="text-center"
+                initial={{ scale: 0 }}
+                animate={{ scale: 1 }}
+                transition={{ type: "spring", delay: 0.2 }}
+                className="w-24 h-24 mx-auto mb-8 rounded-full bg-gradient-to-br from-cyan-500 to-purple-600 flex items-center justify-center"
               >
-                <button
-                  onClick={handleStartConversation}
-                  className="px-8 py-4 bg-gradient-to-r from-[var(--accent-primary)] to-[var(--accent-secondary)] text-white text-lg font-semibold rounded-xl hover:opacity-90 transition-opacity glow-cyan"
-                >
-                  <MessageSquare className="w-5 h-5 inline-block mr-2" />
-                  Start Voice Conversation
-                </button>
+                <Check className="w-12 h-12 text-white" />
               </motion.div>
+
+              <h2 className="text-3xl font-bold text-white mb-4">
+                {investigation.persona.identity.fullName} is ready
+              </h2>
+
+              <p className="text-white/50 mb-2">
+                {investigation.persona.identity.currentRole}
+                {investigation.persona.identity.company && ` at ${investigation.persona.identity.company}`}
+              </p>
+
+              <div className="flex justify-center gap-6 mb-10 text-sm">
+                <div className="text-white/40">
+                  <span className="text-cyan-400 font-bold">{investigation.sourcesScraped}</span> sources
+                </div>
+                <div className="text-white/40">
+                  <span className="text-purple-400 font-bold">{investigation.dataPoints}</span> data points
+                </div>
+                <div className="text-white/40">
+                  <span className="text-green-400 font-bold">{investigation.persona.speech.exampleQuotes.length}</span> quotes
+                </div>
+              </div>
+
+              <button
+                onClick={handleStartCall}
+                className="px-10 py-5 bg-gradient-to-r from-green-500 to-emerald-600 text-white text-xl font-bold rounded-2xl hover:opacity-90 transition-opacity flex items-center gap-3 mx-auto shadow-lg shadow-green-500/25"
+              >
+                <Phone className="w-6 h-6" />
+                Call {investigation.persona.identity.fullName.split(" ")[0]}
+              </button>
+
+              <p className="text-white/30 text-sm mt-4">
+                Voice powered by ElevenLabs • Personality by Grok
+              </p>
             </motion.div>
           )}
 
-          {/* Conversation */}
-          {appState === "conversation" && investigation?.persona && (
+          {/* CALLING STATE */}
+          {appState === "calling" && investigation?.persona && (
             <motion.div
-              key="conversation"
+              key="calling"
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
+              className="px-6 py-12"
             >
               <VoiceConversation
                 persona={investigation.persona}
-                onEnd={handleEndConversation}
+                onEnd={handleEndCall}
               />
             </motion.div>
           )}
