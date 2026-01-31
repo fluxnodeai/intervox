@@ -1,0 +1,117 @@
+# Toolhouse Agent Module
+
+## Purpose
+Integrates Toolhouse.ai SDK to provide AI tool-calling capabilities for the investigation pipeline. Enables Claude to use real-world tools for web search, memory, and data gathering.
+
+## Module Type
+Backend Service (TypeScript/Node.js)
+
+## Dependencies
+- @toolhouseai/sdk - Toolhouse SDK for tool execution
+- @anthropic-ai/sdk - Claude API for AI orchestration
+- @/shared/config - Environment configuration
+
+## Generated File
+`/modules/toolhouse-agent/src/index.ts`
+
+## Environment Variables
+```
+TOOLHOUSE_API_KEY - API key from https://app.toolhouse.ai/settings/api-keys
+ANTHROPIC_API_KEY - Claude API key
+```
+
+## Initialization
+```typescript
+import { Toolhouse } from "@toolhouseai/sdk";
+
+const toolhouse = new Toolhouse({
+  apiKey: process.env.TOOLHOUSE_API_KEY,
+  provider: "anthropic",
+});
+```
+
+## Core Functions
+
+### executeWithTools(task, context?, bundle?)
+Execute a task using Toolhouse-powered Claude with access to real-world tools.
+
+**Parameters:**
+- task: string - The task to execute
+- context?: string - Optional context for the task
+- bundle?: ToolBundle - Tool bundle to use ('web_search' | 'scraping' | 'memory' | 'all')
+
+**Returns:** Promise<string> - The result of the task execution
+
+**Flow:**
+1. Get available tools from Toolhouse
+2. Create Claude message with tools
+3. If tool_use is triggered, run tools through Toolhouse
+4. Return final response
+
+### toolhouseWebSearch(query)
+Search the web using Toolhouse tools.
+
+**Parameters:**
+- query: string - Search query
+
+**Returns:** Promise<string> - Search results
+
+### analyzePersonWithTools(name, context?)
+Analyze a public figure using Toolhouse tools.
+
+**Parameters:**
+- name: string - Person's name
+- context?: string - Additional context
+
+**Returns:** Promise<{ summary, sources, confidence }>
+
+### storeInMemory(key, content)
+Store information in Toolhouse memory for later retrieval.
+
+### retrieveFromMemory(key)
+Retrieve information from Toolhouse memory.
+
+### getAvailableTools()
+Get list of available tools from Toolhouse.
+
+### healthCheck()
+Verify Toolhouse connection and available tools.
+
+## Tool Bundles
+- **web_search** - Web searching and browsing
+- **scraping** - Data extraction tools
+- **memory** - Persistent memory storage
+- **all** - All available tools
+
+## Integration with Orchestrator
+The Toolhouse agent can be used by the orchestrator to:
+1. Supplement rtrvr.ai scraping with additional web search
+2. Store investigation results in memory for cross-session access
+3. Execute complex multi-step research tasks
+
+## Error Handling
+- Wrap all Toolhouse calls in try-catch
+- Return graceful fallbacks on failure
+- Log errors with context for debugging
+
+## Usage Example
+```typescript
+import { analyzePersonWithTools, healthCheck } from "@/modules/toolhouse-agent/src";
+
+// Check connection
+const status = await healthCheck();
+console.log(`Toolhouse connected: ${status.connected}, Tools: ${status.toolCount}`);
+
+// Analyze a person
+const analysis = await analyzePersonWithTools("Elon Musk", "CEO of Tesla and SpaceX");
+console.log(analysis.summary);
+```
+
+## Test File
+`/modules/toolhouse-agent/tests/index.test.ts`
+
+Tests should verify:
+1. healthCheck returns valid response
+2. getAvailableTools returns array
+3. executeWithTools handles errors gracefully
+4. Memory operations work correctly

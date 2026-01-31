@@ -10,16 +10,27 @@ import {
   Database,
   Zap,
   Terminal,
+  AlertCircle,
 } from "lucide-react";
+
+interface LogEvent {
+  id: string;
+  timestamp: string;
+  level: "debug" | "info" | "warn" | "error";
+  category: string;
+  message: string;
+  details?: Record<string, any>;
+}
 
 interface ScrapingEvent {
   id: string;
-  type: "start" | "scraping" | "extracted" | "complete" | "error";
+  type: "start" | "scraping" | "extracted" | "complete" | "error" | "info";
   source: string;
   url?: string;
   dataPoints?: number;
   message?: string;
   timestamp: Date;
+  level?: string;
 }
 
 interface LiveScrapingViewProps {
@@ -38,9 +49,81 @@ export default function LiveScrapingView({
   const [totalDataPoints, setTotalDataPoints] = useState(0);
   const [pagesScraped, setPagesScraped] = useState(0);
   const [isComplete, setIsComplete] = useState(false);
+  const [isConnected, setIsConnected] = useState(false);
   const terminalRef = useRef<HTMLDivElement>(null);
+  const eventSourceRef = useRef<EventSource | null>(null);
 
-  // Poll for status updates
+  // Connect to SSE for real-time logs
+  useEffect(() => {
+    if (isComplete) return;
+
+    // Add initial event
+    addEvent({
+      type: "start",
+      source: "system",
+      message: `Starting deep investigation for "${targetName}"`,
+    });
+
+    // Connect to SSE endpoint
+    const eventSource = new EventSource(`/api/events/${targetId}`);
+    eventSourceRef.current = eventSource;
+
+    eventSource.onopen = () => {
+      setIsConnected(true);
+      console.log("SSE connected");
+    };
+
+    eventSource.onmessage = (event) => {
+      try {
+        const logEvent: LogEvent = JSON.parse(event.data);
+
+        // Convert log event to scraping event
+        const scrapingEvent: ScrapingEvent = {
+          id: logEvent.id,
+          timestamp: new Date(logEvent.timestamp),
+          source: logEvent.category,
+          message: logEvent.message,
+          level: logEvent.level,
+          type: mapLogToEventType(logEvent),
+          url: logEvent.details?.url,
+          dataPoints: logEvent.details?.dataPoints,
+        };
+
+        setEvents((prev) => [...prev, scrapingEvent]);
+
+        // Update stats from log details
+        if (logEvent.details?.url) {
+          setCurrentUrl(logEvent.details.url);
+        }
+        if (logEvent.details?.dataPoints) {
+          setTotalDataPoints((prev) => prev + logEvent.details!.dataPoints);
+        }
+        if (logEvent.message.includes("Scraping")) {
+          setPagesScraped((prev) => prev + 1);
+        }
+
+        // Check for completion
+        if (logEvent.message.includes("complete") || logEvent.message.includes("Ready for conversation")) {
+          setIsComplete(true);
+          onComplete?.();
+        }
+      } catch (e) {
+        console.error("Error parsing SSE event:", e);
+      }
+    };
+
+    eventSource.onerror = () => {
+      setIsConnected(false);
+      console.error("SSE connection error");
+    };
+
+    return () => {
+      eventSource.close();
+      eventSourceRef.current = null;
+    };
+  }, [targetId, targetName, isComplete, onComplete]);
+
+  // Also poll for status updates (backup)
   useEffect(() => {
     if (isComplete) return;
 
@@ -49,25 +132,8 @@ export default function LiveScrapingView({
         const response = await fetch(`/api/status/${targetId}`);
         const data = await response.json();
 
-        if (data.status === "scraping" || data.status === "building_persona") {
-          setPagesScraped(data.sourcesScraped || 0);
-          setTotalDataPoints(data.dataPoints || 0);
-
-          // Add event for new data
-          if (data.scrapedData?.length > events.filter(e => e.type === "extracted").length) {
-            const latestSource = data.scrapedData[data.scrapedData.length - 1];
-            if (latestSource) {
-              addEvent({
-                type: "extracted",
-                source: latestSource.source,
-                url: latestSource.sourceUrl,
-                dataPoints: Object.keys(latestSource.data || {}).length,
-                message: `Extracted data from ${latestSource.source}`,
-              });
-              setCurrentUrl(latestSource.sourceUrl);
-            }
-          }
-        }
+        setPagesScraped(data.sourcesScraped || 0);
+        setTotalDataPoints(data.dataPoints || 0);
 
         if (data.status === "ready") {
           setIsComplete(true);
@@ -89,43 +155,19 @@ export default function LiveScrapingView({
       } catch (error) {
         console.error("Polling error:", error);
       }
-    }, 1000);
+    }, 2000);
 
     return () => clearInterval(pollInterval);
-  }, [targetId, isComplete, events.length, onComplete]);
+  }, [targetId, isComplete, onComplete]);
 
-  // Simulate initial scraping events
-  useEffect(() => {
-    const sources = [
-      "LinkedIn",
-      "Twitter/X",
-      "Wikipedia",
-      "Google News",
-      "YouTube",
-      "GitHub",
-      "Company Sites",
-      "Podcasts",
-    ];
-
-    let delay = 0;
-    sources.forEach((source, i) => {
-      setTimeout(() => {
-        addEvent({
-          type: "scraping",
-          source,
-          url: `Searching ${source.toLowerCase()} for ${targetName}...`,
-          message: `Initiating ${source} scrape`,
-        });
-      }, delay);
-      delay += 800 + Math.random() * 400;
-    });
-
-    addEvent({
-      type: "start",
-      source: "system",
-      message: `Starting deep investigation for "${targetName}"`,
-    });
-  }, [targetName]);
+  function mapLogToEventType(log: LogEvent): ScrapingEvent["type"] {
+    if (log.level === "error") return "error";
+    if (log.message.toLowerCase().includes("complete") || log.message.toLowerCase().includes("ready")) return "complete";
+    if (log.message.toLowerCase().includes("extracted")) return "extracted";
+    if (log.message.toLowerCase().includes("scraping") || log.message.toLowerCase().includes("scrape")) return "scraping";
+    if (log.message.toLowerCase().includes("start")) return "start";
+    return "info";
+  }
 
   // Auto-scroll terminal
   useEffect(() => {
@@ -145,7 +187,10 @@ export default function LiveScrapingView({
     ]);
   };
 
-  const getEventIcon = (type: ScrapingEvent["type"]) => {
+  const getEventIcon = (type: ScrapingEvent["type"], level?: string) => {
+    if (level === "error") {
+      return <AlertCircle className="w-4 h-4 text-[var(--accent-danger)]" />;
+    }
     switch (type) {
       case "start":
         return <Zap className="w-4 h-4 text-[var(--accent-primary)]" />;
@@ -156,11 +201,17 @@ export default function LiveScrapingView({
       case "complete":
         return <Database className="w-4 h-4 text-[var(--accent-primary)]" />;
       case "error":
-        return <span className="w-4 h-4 text-[var(--accent-danger)]">✕</span>;
+        return <AlertCircle className="w-4 h-4 text-[var(--accent-danger)]" />;
+      case "info":
+        return <Terminal className="w-4 h-4 text-[var(--text-muted)]" />;
+      default:
+        return <Terminal className="w-4 h-4 text-[var(--text-muted)]" />;
     }
   };
 
-  const getEventColor = (type: ScrapingEvent["type"]) => {
+  const getEventColor = (type: ScrapingEvent["type"], level?: string) => {
+    if (level === "error") return "text-[var(--accent-danger)]";
+    if (level === "warn") return "text-[var(--accent-warning)]";
     switch (type) {
       case "start":
         return "text-[var(--accent-primary)]";
@@ -172,6 +223,10 @@ export default function LiveScrapingView({
         return "text-[var(--accent-primary)]";
       case "error":
         return "text-[var(--accent-danger)]";
+      case "info":
+        return "text-[var(--text-secondary)]";
+      default:
+        return "text-[var(--text-secondary)]";
     }
   };
 
@@ -236,9 +291,17 @@ export default function LiveScrapingView({
           ref={terminalRef}
           className="bg-[#0d0d0d] p-4 h-80 overflow-y-auto font-mono text-sm"
         >
-          <div className="flex items-center gap-2 mb-4 text-[var(--text-muted)]">
-            <Terminal className="w-4 h-4" />
-            <span>INTERVOX Intelligence Pipeline v1.0</span>
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center gap-2 text-[var(--text-muted)]">
+              <Terminal className="w-4 h-4" />
+              <span>INTERVOX Intelligence Pipeline v1.0</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-[var(--accent-success)]' : 'bg-[var(--accent-warning)]'}`} />
+              <span className="text-xs text-[var(--text-muted)]">
+                {isConnected ? 'Live' : 'Connecting...'}
+              </span>
+            </div>
           </div>
 
           <AnimatePresence>
@@ -247,21 +310,28 @@ export default function LiveScrapingView({
                 key={event.id}
                 initial={{ opacity: 0, x: -10 }}
                 animate={{ opacity: 1, x: 0 }}
-                transition={{ delay: index * 0.05 }}
+                transition={{ delay: Math.min(index * 0.02, 0.5) }}
                 className="flex items-start gap-2 py-1"
               >
                 <span className="text-[var(--text-muted)] text-xs w-20 flex-shrink-0">
-                  {event.timestamp.toLocaleTimeString()}
+                  {event.timestamp instanceof Date
+                    ? event.timestamp.toLocaleTimeString()
+                    : new Date(event.timestamp).toLocaleTimeString()}
                 </span>
-                {getEventIcon(event.type)}
-                <span className={getEventColor(event.type)}>
+                {getEventIcon(event.type, event.level)}
+                <span className={getEventColor(event.type, event.level)}>
                   [{event.source.toUpperCase()}]
                 </span>
-                <span className="text-[var(--text-secondary)]">
+                <span className="text-[var(--text-secondary)] flex-1">
                   {event.message}
-                  {event.dataPoints && (
+                  {event.dataPoints && event.dataPoints > 0 && (
                     <span className="text-[var(--accent-success)]">
                       {" "}+{event.dataPoints} data points
+                    </span>
+                  )}
+                  {event.url && (
+                    <span className="text-[var(--text-muted)] text-xs ml-2 truncate max-w-md inline-block align-bottom">
+                      {event.url}
                     </span>
                   )}
                 </span>
